@@ -7,61 +7,62 @@ import traceback
 from generate_audio import synthesize_audio_for_row
 
 OUTPUT_DIR = "output_shorts"
-MANIM_QUALITY = "-qh"  # '-qh' for 1080x1920 (60fps), '-ql' for fast low-res draft
+MANIM_QUALITY = "-qh"  # High quality 1080x1920 60fps rendering
 CSV_FILE = "content_batch.csv"
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-
 def process_batch():
     if not os.path.exists(CSV_FILE):
-        raise FileNotFoundError(f"Batch file '{CSV_FILE}' not found.")
+        raise FileNotFoundError(f"Batch configuration '{CSV_FILE}' not found.")
 
     with open(CSV_FILE, mode='r', encoding='utf-8') as file:
         reader = list(csv.DictReader(file))
-        total_videos = len(reader)
-        print(f"\n--- Batch Pipeline Started: {total_videos} Videos ---\n")
+        total = len(reader)
+        print(f"\n==========================================")
+        print(f" Starting Production Engine for {total} Videos ")
+        print(f"==========================================\n")
 
         for idx, row in enumerate(reader, 1):
-            vid_id = row.get('video_id', f'short_video_{idx}')
-            print(f"[{idx}/{total_videos}] Processing Video: {vid_id}")
+            vid_id = row.get('video_id', f'short_{idx}')
+            concept_type = row.get('concept_type', 'GENERIC').upper()
+            print(f"[{idx}/{total}] Building Video '{vid_id}' (Type: {concept_type})")
 
             voice_path, pad_path = None, None
 
             try:
-                # 1. Voice Synthesis
+                # 1. Synthesize Voiceover & Audio Pad
                 voice_path, pad_path, audio_duration = synthesize_audio_for_row(row, output_dir="temp_audio")
 
-                # 2. Map CSV fields to Environment Variables
+                # 2. Populate Environment Payload for Universal Scene Engine
                 env = os.environ.copy()
-                for k, v in row.items():
-                    if k and v:
-                        env[k.upper()] = str(v)
+                for key, val in row.items():
+                    if key and val:
+                        env[key.upper()] = str(val)
                 env["AUDIO_DURATION"] = str(audio_duration)
                 env["VIDEO_ID"] = str(vid_id)
 
-                # 3. Clear Stale Media
+                # 3. Clean Stale Intermediate Frames
                 if os.path.exists("media"):
                     shutil.rmtree("media", ignore_errors=True)
 
-                # 4. Render Manim Animation
-                print(f"[Manim] Rendering video scene...")
+                # 4. Render Scene with Universal Physics Engine
+                print(f"[Manim Engine] Rendering 3b1b Animation...")
                 subprocess.run([
                     "manim", MANIM_QUALITY,
                     "--disable_caching",
                     "-o", f"{vid_id}.mp4",
-                    "render_pyq.py", "JEEShort"
+                    "render_universal.py", "UniversalPhysicsScene"
                 ], env=env, check=True)
 
-                found_videos = glob.glob(f"media/**/{vid_id}.mp4", recursive=True)
-                if not found_videos:
-                    raise FileNotFoundError(f"Rendered file {vid_id}.mp4 missing from media/")
-                
-                raw_video = found_videos[0]
+                found = glob.glob(f"media/**/{vid_id}.mp4", recursive=True)
+                if not found:
+                    raise FileNotFoundError(f"Render output {vid_id}.mp4 not found.")
+                raw_video = found[0]
 
-                # 5. FFmpeg Audio/Video Sync
+                # 5. FFmpeg Audio/Video Sync and Post-Processing
                 final_output = os.path.join(OUTPUT_DIR, f"{vid_id}_final.mp4")
-                print(f"[FFmpeg] Stitching audio & video into {final_output}...")
+                print(f"[FFmpeg] Stitching media into {final_output}...")
 
                 filter_complex = (
                     "[1:a][2:a]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[aout];"
@@ -84,10 +85,10 @@ def process_batch():
                     final_output
                 ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
 
-                print(f" COMPLETED -> {final_output}\n")
+                print(f" SUCCESS: {final_output}\n")
 
             except Exception as e:
-                print(f" FAILED processing {vid_id}: {str(e)}")
+                print(f" ERROR on {vid_id}: {str(e)}")
                 traceback.print_exc()
                 continue
 
@@ -98,7 +99,6 @@ def process_batch():
 
     if os.path.exists("temp_audio") and not os.listdir("temp_audio"):
         os.rmdir("temp_audio")
-
 
 if __name__ == "__main__":
     process_batch()
