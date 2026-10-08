@@ -1,0 +1,1290 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Saem Physics — AI Exam Forecaster</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#0d0e15; --card:#171925; --card2:#1c2032; --border:rgba(88,196,221,.18); --border-hover:rgba(88,196,221,.4);
+  --cyan:#58c4dd; --cyan-dim:rgba(88,196,221,.55); --gold:#f8c85e; --gold-dim:rgba(248,200,94,.5);
+  --text:#eceff4; --text-dim:#9aa3b8; --text-faint:#666f85;
+  --serif:Georgia,'Times New Roman',Times,serif;
+  --sans:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
+  --radius:14px;
+  box-sizing:border-box;
+  padding-top:env(safe-area-inset-top,0px); padding-bottom:env(safe-area-inset-bottom,0px);
+}
+*,*::before,*::after{box-sizing:inherit}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+html,body{margin:0;background:var(--bg)}
+body{color:var(--text); font-family:var(--sans); font-size:16px; line-height:1.55; -webkit-font-smoothing:antialiased}
+h1,h2,h3{font-family:var(--serif); font-weight:400; margin:0 0 .3em; letter-spacing:.2px}
+p{margin:0 0 1em; max-width:66ch}
+a{color:var(--cyan)}
+button{font-family:var(--sans); cursor:pointer}
+.wrap{max-width:960px; margin:0 auto; padding:0 20px}
+
+/* header */
+header.top{position:sticky; top:0; top:env(safe-area-inset-top,0px); z-index:5; backdrop-filter:blur(10px); background:rgba(13,14,21,.82); border-bottom:1px solid var(--border)}
+header.top .wrap{display:flex; align-items:center; justify-content:space-between; padding-top:14px; padding-bottom:14px}
+.brand{display:flex; align-items:baseline; gap:8px; font-family:var(--serif); font-size:1.05rem}
+.brand b{color:var(--text)}
+.brand span{color:var(--text-faint); font-family:var(--sans); font-size:.78rem}
+
+/* hero */
+.hero{padding:56px 0 40px; position:relative; overflow:hidden}
+.hero-grid{display:flex; gap:36px; align-items:center; flex-wrap:wrap}
+.hero-copy{flex:1 1 380px; min-width:0}
+.hero h1{font-size:clamp(1.7rem,4.2vw,2.5rem); line-height:1.18; color:var(--text)}
+.hero p.lede{color:var(--text-dim); font-size:1.02rem}
+.orbit-wrap{flex:0 0 150px; width:150px; height:150px; position:relative; margin:0 auto}
+.orbit-ring{position:absolute; inset:0; border:1px solid var(--border); border-radius:50%}
+.orbit-ring.r2{inset:22px; border-color:rgba(88,196,221,.1)}
+.nucleus{position:absolute; top:50%; left:50%; width:12px; height:12px; margin:-6px; border-radius:50%; background:var(--gold); box-shadow:0 0 22px 5px rgba(248,200,94,.35)}
+.electron{position:absolute; top:50%; left:50%; width:8px; height:8px; margin:-4px; border-radius:50%; background:var(--cyan); box-shadow:0 0 12px 3px rgba(88,196,221,.65); animation:orbit 6s linear infinite}
+.electron.b{width:6px; height:6px; margin:-3px; animation-duration:3.6s; animation-direction:reverse; opacity:.75}
+@keyframes orbit{from{transform:rotate(0deg) translateX(73px) rotate(0deg)}to{transform:rotate(360deg) translateX(73px) rotate(-360deg)}}
+.electron.b{animation-name:orbit-b}
+@keyframes orbit-b{from{transform:rotate(0deg) translateX(48px) rotate(0deg)}to{transform:rotate(360deg) translateX(48px) rotate(-360deg)}}
+@media (prefers-reduced-motion:reduce){.electron{animation:none}.electron{transform:translateX(73px)}.electron.b{transform:translateX(48px)}}
+
+/* cards & sections */
+section{padding:28px 0}
+.card{background:var(--card); border:1px solid var(--border); border-radius:var(--radius); padding:20px; transition:transform .18s ease,border-color .18s ease}
+.card:hover{transform:translateY(-3px); border-color:var(--border-hover)}
+.section-label{font-size:.78rem; color:var(--text-faint); margin-bottom:6px}
+.section-title{font-family:var(--serif); font-size:1.3rem; margin-bottom:14px}
+
+/* input panel */
+.input-tabs{display:flex; gap:8px; margin-bottom:16px; flex-wrap:wrap}
+.tab-btn{background:var(--card2); border:1px solid var(--border); color:var(--text-dim); border-radius:999px; padding:8px 16px; font-size:.88rem}
+.tab-btn.primary{background:var(--cyan); color:#08141a; border-color:var(--cyan); font-weight:600}
+.tab-btn.ghost{background:transparent}
+.field{margin-bottom:14px}
+.field label{display:block; font-size:.82rem; color:var(--text-dim); margin-bottom:6px}
+input[type=text],input[type=number],textarea{width:100%; background:var(--card2); border:1px solid var(--border); border-radius:10px; color:var(--text); padding:10px 12px; font-family:var(--sans); font-size:.92rem}
+textarea{min-height:110px; resize:vertical; font-family:ui-monospace,'SFMono-Regular',Menlo,Consolas,monospace; font-size:.82rem; line-height:1.5}
+input:focus,textarea:focus,button:focus-visible{outline:2px solid var(--cyan); outline-offset:2px}
+.file-row{display:flex; align-items:center; gap:10px; flex-wrap:wrap}
+.file-label{background:var(--card2); border:1px dashed var(--border-hover); border-radius:10px; padding:14px; text-align:center; color:var(--text-dim); font-size:.88rem; cursor:pointer; flex:1 1 200px}
+.file-label:hover{border-color:var(--cyan)}
+.file-hint{font-size:.72rem; color:var(--text-faint); align-self:center}
+#ingestStatus{font-size:.8rem; color:var(--cyan-dim); margin:8px 0; display:flex; align-items:center; gap:8px}
+#ingestStatus .spin{width:12px; height:12px; border-radius:50%; border:2px solid var(--border); border-top-color:var(--cyan); animation:spin 0.8s linear infinite; flex:0 0 auto}
+@keyframes spin{to{transform:rotate(360deg)}}
+@media (prefers-reduced-motion:reduce){#ingestStatus .spin{animation:none}}
+input[type=file]{display:none}
+.src-row{display:flex; align-items:center; gap:10px; padding:8px 0; border-bottom:1px solid var(--border); font-size:.86rem}
+.src-name{flex:1; color:var(--text)}
+.src-n{color:var(--text-faint); font-size:.78rem}
+.src-rm{background:none; border:none; color:var(--text-faint); font-size:1.1rem; line-height:1; padding:2px 6px}
+.src-rm:hover{color:var(--gold)}
+.src-warn{font-size:.78rem; color:var(--gold-dim); padding:2px 0 8px}
+#sourceSummary{font-size:.82rem; color:var(--text-dim); margin:8px 0}
+#sourceHint{font-size:.82rem; color:var(--gold-dim); background:rgba(248,200,94,.07); border:1px solid rgba(248,200,94,.2); border-radius:10px; padding:8px 12px; margin-bottom:10px}
+.advanced-toggle{background:none; border:none; color:var(--cyan-dim); font-size:.82rem; padding:4px 0; margin-bottom:8px}
+.advanced-grid{display:grid; grid-template-columns:1fr 1fr; gap:14px}
+.advanced-grid[hidden]{display:none}
+@media (max-width:520px){.advanced-grid{grid-template-columns:1fr}}
+.paste-row{display:flex; gap:10px; align-items:flex-end; flex-wrap:wrap}
+.paste-row .field{flex:1 1 100px}
+.big-btn{width:100%; padding:14px; border-radius:12px; border:1px solid var(--cyan); background:var(--cyan); color:#08141a; font-weight:600; font-size:1rem; margin-top:4px}
+.big-btn:disabled{opacity:.4; cursor:not-allowed}
+.big-btn.secondary{background:transparent; color:var(--cyan); margin-top:10px}
+.error-box{background:rgba(227,123,123,.1); border:1px solid rgba(227,123,123,.35); color:#f3b3b3; border-radius:10px; padding:12px 14px; font-size:.88rem; margin-top:12px}
+
+/* progress */
+.progress-wrap{margin-top:16px}
+.progress-track{height:6px; background:var(--card2); border-radius:99px; overflow:hidden}
+.progress-fill{height:100%; width:2%; background:linear-gradient(90deg,var(--cyan),var(--gold)); transition:width .25s ease}
+#statusText{font-size:.8rem; color:var(--text-faint); margin-top:6px}
+
+/* results */
+.stat-row{display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:14px; margin-bottom:22px}
+.stat{background:var(--card); border:1px solid var(--border); border-radius:var(--radius); padding:16px}
+.stat .num{font-family:var(--serif); font-size:1.5rem; color:var(--text)}
+.stat .lab{font-size:.75rem; color:var(--text-faint); margin-top:2px}
+#backtestNote{font-size:.78rem; color:var(--text-faint); margin-top:-10px; margin-bottom:20px}
+.warn-item{font-size:.82rem; color:var(--gold-dim); background:rgba(248,200,94,.07); border:1px solid rgba(248,200,94,.2); border-radius:10px; padding:8px 12px; margin-bottom:8px}
+
+.bar-row{display:grid; grid-template-columns:150px 1fr 90px; align-items:center; gap:12px; margin-bottom:9px; font-size:.85rem}
+.bar-label{display:flex; align-items:center; gap:6px; color:var(--text-dim); overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+.trend{font-size:.7rem}
+.trend-up{color:var(--gold)}
+.trend-down{color:var(--text-faint)}
+.trend-flat{color:var(--cyan-dim)}
+.bar-track{height:8px; background:var(--card2); border-radius:99px; overflow:hidden}
+.bar-fill{height:100%; background:var(--cyan); border-radius:99px}
+.bar-n{color:var(--text-faint); font-size:.78rem; text-align:right}
+
+.results-head{display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; margin-bottom:6px}
+.ghost-btn{background:var(--card2); border:1px solid var(--border); color:var(--text); border-radius:10px; padding:9px 16px; font-size:.85rem}
+.ghost-btn:hover{border-color:var(--border-hover)}
+.dl-row{display:flex; gap:10px; flex-wrap:wrap; margin:14px 0 26px}
+
+.topic-group{margin-bottom:26px}
+.topic-head{display:flex; align-items:baseline; gap:10px; margin-bottom:10px}
+.topic-head h3{font-size:1.05rem; color:var(--text)}
+.topic-count{font-size:.75rem; color:var(--text-faint)}
+.picks-grid{display:grid; grid-template-columns:repeat(auto-fill,minmax(260px,1fr)); gap:14px}
+.pick-card{background:var(--card); border:1px solid var(--border); border-radius:var(--radius); padding:16px; transition:transform .18s ease,border-color .18s ease}
+.pick-card:hover{transform:translateY(-3px); border-color:var(--border-hover)}
+.pick-top{display:flex; align-items:center; gap:10px; margin-bottom:10px}
+.rank-badge{font-family:var(--serif); font-size:.82rem; border-radius:8px; padding:3px 8px; border:1px solid var(--border)}
+.rank-badge.rank-gold{color:var(--gold); border-color:rgba(248,200,94,.35)}
+.rank-badge.rank-cyan{color:var(--cyan); border-color:var(--border)}
+.rank-badge.rank-dim{color:var(--text-faint)}
+.meter{flex:1; height:6px; background:var(--card2); border-radius:99px; overflow:hidden}
+.meter-fill{height:100%; background:linear-gradient(90deg,var(--cyan),var(--gold))}
+.meter-pct{font-size:.78rem; color:var(--text-dim); min-width:36px; text-align:right}
+.pick-label{font-size:.98rem; color:var(--text); margin-bottom:6px}
+.pick-reason{font-size:.78rem; margin-bottom:10px}
+.reason-gold{color:var(--gold-dim)}
+.reason-cyan{color:var(--cyan-dim)}
+.reason-dim{color:var(--text-faint)}
+.pick-example{border-top:1px solid var(--border); padding-top:10px}
+.pick-q{font-size:.85rem; color:var(--text-dim); font-style:italic; margin-bottom:4px}
+.pick-year{font-size:.72rem; color:var(--text-faint)}
+
+footer{border-top:1px solid var(--border); padding:30px 0 calc(30px + env(safe-area-inset-bottom,0px)); color:var(--text-faint); font-size:.82rem}
+footer p{max-width:70ch}
+.hidden{display:none}
+</style>
+</head>
+<body>
+
+<header class="top">
+  <div class="wrap">
+    <div class="brand"><b>Saem Physics</b><span>AI Exam Forecaster</span></div>
+  </div>
+</header>
+
+<section class="hero">
+  <div class="wrap hero-grid">
+    <div class="hero-copy">
+      <h1>What the next paper is most likely to ask</h1>
+      <p class="lede">Feed in past papers — any number of years — and this reads the pattern: which topics return on a cycle, which are heating up, which are overdue. It ranks the 40 most probable questions and topics for the next paper, with the reasoning behind each one.</p>
+    </div>
+    <div class="orbit-wrap" aria-hidden="true">
+      <div class="orbit-ring"></div>
+      <div class="orbit-ring r2"></div>
+      <div class="nucleus"></div>
+      <div class="electron"></div>
+      <div class="electron b"></div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <div class="card">
+      <div class="section-label">Step 1</div>
+      <div class="section-title">Give it papers to learn from</div>
+
+      <div class="input-tabs">
+        <label class="tab-btn primary file-label" style="flex:0 0 auto; padding:8px 16px;" for="fileInput">Upload papers</label>
+        <input id="fileInput" type="file" multiple accept=".csv,.tsv,.txt,.pdf,.docx,.jpg,.jpeg,.png">
+        <span class="file-hint">PDF, DOCX, CSV, TXT or a photo/scan &mdash; scans are read with on-device OCR (slower, and less reliable on equations)</span>
+        <div id="ingestStatus" hidden></div>
+        <button class="tab-btn ghost" id="demoBtn" type="button">Try it with demo data</button>
+      </div>
+
+      <div class="field">
+        <label for="pasteArea">Or paste a paper's questions (one per line — numbering like "1." or "Q1" is detected automatically)</label>
+        <div class="paste-row">
+          <div class="field" style="flex:1 1 100%; margin-bottom:0">
+            <textarea id="pasteArea" placeholder="2024&#10;1. A ball is thrown vertically upward...&#10;2. Two point charges are placed 10 cm apart...&#10;&#10;2023&#10;1. ..."></textarea>
+          </div>
+        </div>
+        <div class="paste-row" style="margin-top:10px">
+          <div class="field" style="flex:0 0 140px; margin-bottom:0">
+            <label for="pasteYear">Year (if not in the text)</label>
+            <input id="pasteYear" type="number" placeholder="e.g. 2024">
+          </div>
+          <button class="ghost-btn" id="addPasteBtn" type="button">Add to sources</button>
+        </div>
+      </div>
+
+      <div id="sourceList"></div>
+      <div id="sourceSummary"></div>
+      <div id="sourceHint" hidden></div>
+
+      <button class="advanced-toggle" id="advancedToggle" type="button" aria-expanded="false">Advanced options ▾</button>
+      <div id="advancedPanel" class="advanced-grid" hidden>
+        <div class="field">
+          <label for="kInput">How many predictions</label>
+          <input id="kInput" type="number" value="40" min="10" max="60">
+        </div>
+        <div class="field">
+          <label for="excludeInput">Exclude topics (comma-separated)</label>
+          <input id="excludeInput" type="text" placeholder="e.g. Communication Systems">
+        </div>
+        <div class="field" style="grid-column:1/-1">
+          <label for="customSyllabus">Custom topic keywords (optional — used only for papers with no topic/chapter column). One per line: <code>Topic name: keyword, keyword, keyword</code>. Leave blank to use the built-in physics syllabus.</label>
+          <textarea id="customSyllabus" placeholder="Kinematics: velocity, acceleration, projectile&#10;Thermodynamics: entropy, carnot, isothermal"></textarea>
+        </div>
+      </div>
+
+      <button class="big-btn" id="analyzeBtn" type="button" disabled>Analyze &amp; forecast</button>
+      <div id="errorBox" class="error-box" hidden></div>
+      <div id="progressWrap" class="progress-wrap" hidden>
+        <div class="progress-track"><div class="progress-fill" id="progressFill"></div></div>
+        <div id="statusText"></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="results" hidden>
+  <div class="wrap">
+    <div class="section-label">Step 2</div>
+    <div class="section-title">Forecast for <span id="statTarget"></span></div>
+
+    <div class="stat-row">
+      <div class="stat"><div class="num" id="statYears"></div><div class="lab">years covered</div></div>
+      <div class="stat"><div class="num" id="statPapers" style="font-size:1.1rem"></div><div class="lab">source size</div></div>
+      <div class="stat" id="backtestBlock"><div class="num" id="statBacktest" style="font-size:1.1rem"></div><div class="lab">top-40 hit rate, backtest vs random</div></div>
+    </div>
+    <div id="backtestNote"></div>
+    <div id="warnings" hidden></div>
+
+    <div class="card" style="margin-bottom:26px">
+      <div class="section-title" style="font-size:1.05rem">Expected weightage by chapter</div>
+      <div id="topicForecast"></div>
+    </div>
+
+    <div class="results-head">
+      <div class="section-title" style="margin-bottom:0">The 40 predicted questions</div>
+      <button class="ghost-btn" id="shuffleBtn" type="button">Shuffle examples</button>
+    </div>
+    <div class="dl-row">
+      <button class="ghost-btn dl-btn" id="dlExportBtn" type="button" hidden>Export predictions (CSV)</button>
+    </div>
+
+    <div id="picksContainer"></div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <p><strong>How this works.</strong> Each past question is grouped with earlier questions on the same idea. For every resulting concept, the model looks at how often it appears, how recently, and how regularly it cycles back — then a logistic regression (trained on your own earlier papers, tested only against papers it never saw) turns that into a probability for the upcoming paper. The chapter-level weightage uses whichever of a few simple trend models has predicted your actual papers best historically.</p>
+    <p>This is a revision-priority tool built from public patterns in your own papers — not a leaked paper and not a guarantee. Treat a high rank as "study this first," not "this exact question will appear."</p>
+    <div class="dl-row">
+      <button class="ghost-btn dl-btn" id="dlTemplateBtn" type="button" hidden>Download CSV template</button>
+    </div>
+  </div>
+</footer>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.4.2/mammoth.browser.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.0/dist/tesseract.min.js"></script>
+<script type="module">
+  import * as pdfjsLib from 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/5.6.205/pdf.min.mjs';
+  pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/5.6.205/pdf.worker.min.mjs';
+  window.__pdfjsLib = pdfjsLib;
+  window.__pdfjsReady = true;
+</script>
+<script>
+/* Exam Forecaster engine — pure JS, no DOM. Works in browsers and Node. */
+(function (root) {
+'use strict';
+
+/* ---------- helpers ---------- */
+const clamp = (x, a, b) => Math.min(b, Math.max(a, x));
+const sigmoid = z => 1 / (1 + Math.exp(-z));
+const logit = p => { p = clamp(p, 1e-4, 1 - 1e-4); return Math.log(p / (1 - p)); };
+const mean = a => a.length ? a.reduce((s, x) => s + x, 0) / a.length : 0;
+const median = a => { if (!a.length) return 0; const b = [...a].sort((x, y) => x - y), m = b.length >> 1; return b.length % 2 ? b[m] : (b[m - 1] + b[m]) / 2; };
+function rng(seed) { let a = seed >>> 0; return function () { a = (a + 0x6D2B79F5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
+const tick = () => new Promise(r => setTimeout(r, 0));
+const normKey = s => String(s == null ? '' : s).toLowerCase().replace(/\s+/g, ' ').trim();
+
+/* ---------- reading files ---------- */
+function detectDelimiter(text) {
+  const first = text.split(/\r?\n/, 1)[0] || '';
+  const counts = { ',': 0, ';': 0, '\t': 0 };
+  let inQ = false;
+  for (const ch of first) { if (ch === '"') inQ = !inQ; else if (!inQ && ch in counts) counts[ch]++; }
+  const best = Object.entries(counts).sort((a, b) => b[1] - a[1])[0];
+  return best[1] > 0 ? best[0] : ',';
+}
+function parseDelimited(text) {
+  if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
+  const d = detectDelimiter(text), rows = [];
+  let row = [], field = '', inQ = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (inQ) {
+      if (c === '"') { if (text[i + 1] === '"') { field += '"'; i++; } else inQ = false; }
+      else field += c;
+    } else if (c === '"') inQ = true;
+    else if (c === d) { row.push(field); field = ''; }
+    else if (c === '\n') { row.push(field); rows.push(row); row = []; field = ''; }
+    else if (c !== '\r') field += c;
+  }
+  if (field.length || row.length) { row.push(field); rows.push(row); }
+  return rows.filter(r => r.some(x => x.trim() !== ''));
+}
+const ALIAS = {
+  year: ['year', 'yr', 'exam year', 'paper year', 'session'],
+  text: ['question', 'questions', 'question text', 'text', 'q', 'ques', 'problem', 'statement'],
+  topic: ['topic', 'chapter', 'chapter name', 'unit', 'topic name'],
+  concept: ['concept', 'subtopic', 'sub topic', 'subconcept'],
+};
+const hnorm = s => String(s == null ? '' : s).toLowerCase().replace(/[_\-]+/g, ' ').replace(/\s+/g, ' ').trim();
+function mapColumns(header) {
+  const cols = {};
+  header.forEach((h, i) => { const n = hnorm(h); for (const key in ALIAS) if (cols[key] === undefined && ALIAS[key].includes(n)) cols[key] = i; });
+  return cols;
+}
+const yearOf = v => { const m = String(v == null ? '' : v).match(/\b(19[89]\d|20[0-4]\d)\b/); return m ? parseInt(m[1], 10) : null; };
+function makeRecord(year, text, topic, concept) {
+  text = String(text == null ? '' : text).replace(/\s+/g, ' ').trim().slice(0, 1500);
+  if (!year || text.length < 8) return null;
+  return { year, text, topic: topic && String(topic).trim() ? String(topic).trim() : null, concept: concept && String(concept).trim() ? String(concept).trim() : null };
+}
+function recordsFromRows(rows) {
+  if (!rows.length) return { records: [], error: 'The file is empty.' };
+  const cols = mapColumns(rows[0]);
+  if (cols.year === undefined || cols.text === undefined) return { records: [], error: 'Add a header row with "year" and "question" columns (optional: "topic", "concept").' };
+  const records = [];
+  for (let i = 1; i < rows.length; i++) {
+    const r = rows[i];
+    const rec = makeRecord(yearOf(r[cols.year]), r[cols.text], cols.topic !== undefined ? r[cols.topic] : null, cols.concept !== undefined ? r[cols.concept] : null);
+    if (rec) records.push(rec);
+  }
+  return { records };
+}
+function recordsFromObjects(arr) {
+  const records = [];
+  for (const o of arr) {
+    if (!o || typeof o !== 'object') continue;
+    const keys = Object.keys(o), cols = mapColumns(keys);
+    if (cols.year === undefined || cols.text === undefined) continue;
+    const rec = makeRecord(yearOf(o[keys[cols.year]]), o[keys[cols.text]], cols.topic !== undefined ? o[keys[cols.topic]] : null, cols.concept !== undefined ? o[keys[cols.concept]] : null);
+    if (rec) records.push(rec);
+  }
+  return { records, error: records.length ? undefined : 'No objects with "year" and "question" fields were found.' };
+}
+function yearFromHeader(line) {
+  const s = line.trim();
+  if (!s || s.length > 60) return null;
+  const m = s.match(/\b(19[89]\d|20[0-4]\d)\b/);
+  if (!m) return null;
+  const rest = s.replace(m[0], ' ').toLowerCase().replace(/[^a-z\s]/g, ' ')
+    .replace(/\b(year|paper|papers|exam|examination|session|question|questions|neet|ug|jee|main|mains|advanced|aipmt|cbse|board|class|xii|xi|th|shift|set|code|physics|chemistry|biology|maths|mathematics|final|memory|based|of|the|for|and|in|to|from|held|on)\b/g, ' ')
+    .replace(/\s+/g, '');
+  return /^[a-e]?$/.test(rest) ? parseInt(m[1], 10) : null;
+}
+const Q_RES = [
+  ['q', /^\s*q(?:uestion)?\s*\.?\s*(\d{1,3})\s*[\)\].:\-–]?\s*(.*)$/i],
+  ['dot', /^\s*(\d{1,3})\s*\.\s+(\S.*)$/],
+  ['rparen', /^\s*(\d{1,3})\s*\)\s*(\S.*)$/],
+  ['paren', /^\s*\(\s*(\d{1,3})\s*\)\s*(\S.*)$/],
+  ['brack', /^\s*\[\s*(\d{1,3})\s*\]\s*(\S.*)$/],
+];
+function parsePaperText(text, defaultYear) {
+  const lines = text.replace(/\r/g, '').split('\n');
+  const records = [], counts = new Map();
+  let year = defaultYear || null, last = 0, style = null, cur = null, blank = true, section = false, noYear = 0;
+  const flush = () => {
+    if (!cur) return;
+    const rec = makeRecord(cur.year, cur.text, null, null);
+    if (rec) { records.push(rec); counts.set(rec.year, (counts.get(rec.year) || 0) + 1); }
+    else if (!cur.year && cur.text.trim().length >= 8) noYear++;
+    cur = null;
+  };
+  for (const line of lines) {
+    if (!line.trim()) { blank = true; continue; }
+    const hy = yearFromHeader(line);
+    if (hy && (blank || !cur)) { flush(); year = hy; last = 0; style = null; section = false; blank = false; continue; }
+    if (/^\s*(section|part)\b/i.test(line) && line.length < 60) { flush(); section = true; blank = false; continue; }
+    let hit = null;
+    for (const [st, re] of Q_RES) {
+      const m = line.match(re);
+      if (!m) continue;
+      const n = parseInt(m[1], 10);
+      let ok = false;
+      if (st === 'q') ok = true;
+      else if (style === null) ok = n <= 3;
+      else if (st === style) ok = n === last + 1 || (n === 1 && (blank || section) && last >= 3);
+      if (ok) { hit = { st, n, rest: m[2] }; break; }
+    }
+    if (hit) {
+      flush();
+      if (hit.st !== 'q' || style === null) style = style === null ? hit.st : style;
+      last = hit.n; section = false;
+      cur = { year, text: hit.rest };
+    } else if (cur) cur.text += ' ' + line.trim();
+    blank = false;
+  }
+  flush();
+  return { records, counts, noYear };
+}
+
+/* ---------- topic labels from a syllabus list ---------- */
+function kwRegex(kw) {
+  let s = kw.trim().toLowerCase().replace(/['’`]/g, '');
+  const wild = s.endsWith('*'); if (wild) s = s.slice(0, -1);
+  const esc = s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '[\\s\\-]+');
+  return new RegExp('(?:^|[^a-z0-9])' + esc + (wild ? '[a-z]*' : '(?:s|es)?') + '(?![a-z0-9])', 'i');
+}
+function compileSyllabus(text) {
+  const out = [];
+  for (const raw of String(text || '').split(/\n/)) {
+    const line = raw.trim(); if (!line || line[0] === '#') continue;
+    const i = line.indexOf(':'); if (i < 1) continue;
+    const name = line.slice(0, i).trim();
+    const kws = line.slice(i + 1).split(',').map(x => x.trim()).filter(Boolean);
+    kws.push(name);
+    out.push({ name, kws: kws.map(k => ({ re: kwRegex(k), w: 1 + 0.6 * (k.trim().split(/\s+/).length - 1) })) });
+  }
+  return out;
+}
+function tagWithSyllabus(text, syl) {
+  const t = ' ' + String(text).toLowerCase().replace(/['’`]/g, '') + ' ';
+  let best = null, bs = 0;
+  for (const s of syl) { let sc = 0; for (const k of s.kws) if (k.re.test(t)) sc += k.w; if (sc > bs) { bs = sc; best = s.name; } }
+  return best;
+}
+const PHYSICS_SYLLABUS = `Units & Measurement: dimension*, significant figures, least count, vernier, screw gauge, order of magnitude, percentage error, absolute error, physical quantity, si unit
+Vectors: vector, scalar product, dot product, cross product, vector product, resultant, unit vector, components of, angle between
+Kinematics: displacement, velocity-time, position-time, uniformly accelerated, uniform acceleration, free fall, freely falling, projectile, time of flight, maximum height, relative velocity, average speed, distance travelled, dropped from, thrown vertically, thrown upward, river, boat, swimmer
+Circular Motion: circular motion, centripetal, angular velocity, banking, banked, conical pendulum, vertical circle, uniform circular, radial acceleration, tangential acceleration
+Laws of Motion: newtons law, newtons second, friction, coefficient of friction, inclined plane, pulley, atwood, tension in, normal reaction, pseudo force, lift accelerating, elevator, apparent weight, limiting friction, impulse, recoil
+Work Energy Power: work done, kinetic energy, potential energy, work energy theorem, power of, conservative force, spring compressed, mechanical energy, watt, horsepower, work by friction
+Rotational Motion: moment of inertia, torque, angular momentum, centre of mass, center of mass, radius of gyration, rolling, without slipping, rotational kinetic, parallel axis, perpendicular axis, angular acceleration, disc, coefficient of restitution, elastic collision, inelastic collision, linear momentum
+Gravitation: gravitation*, gravitational, escape velocity, escape speed, orbital velocity, kepler*, satellite, acceleration due to gravity, geostationary, orbit, planet, mass of earth
+Mechanical Properties of Solids: youngs modulus, stress, strain, elastic, bulk modulus, shear modulus, modulus of rigidity, poissons ratio, hookes law, elongation, breaking stress, elastic potential energy, stretched wire
+Mechanical Properties of Fluids: fluid, pressure, buoyan*, archimedes, bernoulli, viscosity, viscous, terminal velocity, surface tension, capillar*, stokes, streamline, torricelli, pascal, manometer, excess pressure, soap bubble, poiseuille, reynolds, floating, submerged
+Thermal Properties of Matter: specific heat, latent heat, calorimetr*, thermal expansion, coefficient of linear, coefficient of volume, thermal conductivity, conduction, convection, stefan, newtons law of cooling, cooling, wien, black body, blackbody, heat transfer, celsius, fahrenheit, thermal stress, melting, steam
+Thermodynamics: thermodynamic*, first law, second law, isotherm*, adiabat*, isobaric, isochoric, carnot, efficiency of, heat engine, refrigerator, coefficient of performance, entropy, cyclic process, pv diagram, p-v diagram, internal energy, work done by gas, reversible, free expansion
+Kinetic Theory: kinetic theory, rms speed, root mean square, mean free path, degrees of freedom, equipartition, ideal gas, gas equation, molar specific heat, monoatomic, diatomic, mean kinetic energy, boyles law, charles law
+Oscillations: simple harmonic, shm, oscillat*, time period, simple pendulum, spring mass, angular frequency, amplitude, damped, restoring force, physical pendulum, torsional pendulum, spring constant
+Waves & Sound: wave, sound, stationary wave, standing wave, doppler, beats, organ pipe, closed pipe, open pipe, resonance tube, vibrating string, transverse wave, longitudinal wave, harmonic, overtone, intensity level, decibel, superposition, sonometer, node, antinode, wavelength, progressive wave
+Electrostatics: electric field, electric charge, coulomb, gauss*, electric flux, dipole, electric potential, equipotential, point charge, charged sphere, charged ring, charged conductor, line charge, electric lines, charge distribution, uniformly charged
+Capacitors: capacitor, capacitance, dielectric, parallel plate, energy stored in, combination of capacitors, charging of capacitor, common potential
+Current Electricity: resistance, resistivity, resistor, ohms law, kirchhoff*, wheatstone, meter bridge, potentiometer, drift velocity, emf, internal resistance, battery, ammeter, voltmeter, shunt, electric power, heating effect, joule, colour code, conductivity, mobility, current density, filament, fuse, post office box, terminal voltage
+Magnetic Effects of Current: magnetic field, biot savart, biot-savart, amperes law, solenoid, toroid, lorentz force, cyclotron, moving coil galvanometer, galvanometer, current carrying wire, current carrying conductor, current loop, magnetic moment, straight wire, circular loop, force between parallel
+Magnetism & Matter: bar magnet, magnetic dipole, diamagnet*, paramagnet*, ferromagnet*, earths magnetic, magnetic declination, angle of dip, hysteresis, susceptibility, permeability, curie, magnetic poles, neutral point, magnetic meridian, retentivity, coercivity
+Electromagnetic Induction: faraday*, lenz*, induced emf, self inductance, mutual inductance, eddy current, motional emf, induced current, magnetic flux, generator, inductor, sliding rod
+Alternating Current: alternating, ac circuit, lcr, lc circuit, rms value, reactance, impedance, resonant frequency, power factor, transformer, wattless, choke, step up, step down, peak value, ac source
+Electromagnetic Waves: electromagnetic wave, electromagnetic spectrum, displacement current, gamma rays, microwave, radio wave, ultraviolet, infrared, maxwell, poynting, em wave, speed of light
+Ray Optics: lens, mirror, refraction, reflection, focal length, refractive index, total internal reflection, prism, critical angle, telescope, microscope, magnifying power, power of lens, image distance, real image, virtual image, optical instrument, dispersion, rainbow, myopia, hypermetropia, lens maker, minimum deviation, apparent depth, concave, convex, plane mirror, glass slab
+Wave Optics: interfer*, youngs double slit, double slit, diffract*, polaris*, brewster, fringe, coherent, huygens, single slit, path difference, malus, resolving power, optical path, monochromatic, polaroid, unpolarised
+Dual Nature of Radiation & Matter: photoelectric, work function, threshold frequency, stopping potential, de broglie, photon, davisson, matter wave, photocurrent, momentum of photon
+Atoms: bohr, hydrogen atom, rutherford, spectral series, lyman, balmer, paschen, energy level, orbit radius, alpha particle scattering, ionization energy, hydrogen spectrum, electron transition, excited state, ground state
+Nuclei: radioactiv*, half life, half-life, decay, binding energy, mass defect, nuclear, fission, fusion, alpha decay, beta decay, activity of, becquerel, mean life, decay constant, radius of nucleus, mass number, nuclear reactor
+Semiconductors & Electronics: semiconductor, p-n junction, pn junction, diode, transistor, logic gate, rectifier, zener, n-type, p-type, band gap, energy band, led, photodiode, amplifier, nand, nor gate, boolean, truth table, forward bias*, reverse bias*, depletion, doping, common emitter
+Communication Systems: modulation, amplitude modulation, frequency modulation, antenna, bandwidth, carrier wave, sky wave, ground wave, demodulation, communication system, transmitter, receiver, modulation index, space wave, optical fibre, satellite communication`;
+
+/* ---------- text -> vectors ---------- */
+const STOP = new Set(('a an the of in on at to for from by with and or but if then than as is are was were be been being this that these those it its into onto over under between among about above below up down out off per each any all both either neither not no nor so such can could may might will would shall should must do does did done has have had having which what when where who whom whose why how ' +
+  'find calculate determine given following statement statements correct incorrect true false option options choose answer value values assertion reason select match column list question also only one two three four ' +
+  'kg cm mm km ms hz ev mev nm ml gm kj mj ma mv kv sec seconds metre meter metres meters unit units').split(' '));
+function stem(w) {
+  if (w.length > 5 && w.endsWith('ies')) return w.slice(0, -3) + 'y';
+  if (w.length > 5 && w.endsWith('ing')) return w.slice(0, -3);
+  if (w.length > 4 && w.endsWith('ed')) return w.slice(0, -2);
+  if (w.length > 4 && w.endsWith('es')) return w.slice(0, -2);
+  if (w.length > 3 && w.endsWith('s') && !w.endsWith('ss')) return w.slice(0, -1);
+  return w;
+}
+function featureTokens(text, surf) {
+  const words = (String(text).toLowerCase().replace(/['’`]/g, '').match(/[a-z\u0900-\u097f]{2,}/g)) || [];
+  const uni = [];
+  for (const w of words) {
+    if (STOP.has(w)) continue;
+    const s = stem(w); uni.push(s);
+    if (surf) { let m = surf.get(s); if (!m) surf.set(s, m = new Map()); m.set(w, (m.get(w) || 0) + 1); }
+  }
+  const toks = uni.slice();
+  for (let i = 0; i + 1 < uni.length; i++) toks.push(uni[i] + '_' + uni[i + 1]);
+  return toks;
+}
+function makeVec(toks, idf) {
+  const tf = new Map();
+  for (const t of toks) tf.set(t, (tf.get(t) || 0) + 1);
+  const v = new Map(); let n2 = 0;
+  for (const [t, c] of tf) { const w = (1 + Math.log(c)) * idf(t); v.set(t, w); n2 += w * w; }
+  const n = Math.sqrt(n2) || 1;
+  for (const [t, w] of v) v.set(t, w / n);
+  return v;
+}
+function dot(a, b) { if (a.size > b.size) { const t = a; a = b; b = t; } let s = 0; for (const [t, w] of a) { const x = b.get(t); if (x) s += w * x; } return s; }
+
+/* ---------- data prep ---------- */
+function prepare(records, excluded, warnings) {
+  const surf = new Map();
+  let recs = records.filter(r => r.year && r.text);
+  const yearsAll = [...new Set(recs.map(r => r.year))].sort((a, b) => a - b);
+  const sizeAll = new Map(yearsAll.map(y => [y, 0]));
+  for (const r of recs) sizeAll.set(r.year, sizeAll.get(r.year) + 1);
+  const used = new Set();
+  const isExcl = t => { if (!t) return false; const k = normKey(t); for (const e of excluded) if (e.length >= 3 && k.includes(e)) { used.add(e); return true; } return false; };
+  recs = recs.filter(r => !isExcl(r.topic));
+  for (const e of excluded) if (!used.has(e)) warnings.push('"' + e + '" matched no topic, so nothing was removed for it.');
+  const years = [...new Set(recs.map(r => r.year))].sort((a, b) => a - b);
+  const yi = new Map(years.map((y, i) => [y, i]));
+  const qs = recs.map((r, i) => ({ id: i, p: yi.get(r.year), year: r.year, text: r.text, topic: r.topic || null, concept: r.concept || null, toks: featureTokens(r.text, surf) }));
+  const byPaper = years.map(() => []);
+  for (const q of qs) byPaper[q.p].push(q);
+  const sizes = byPaper.map(a => a.length), sizesPre = years.map(y => sizeAll.get(y));
+  const med = median(sizes);
+  years.forEach((y, i) => { if (med >= 10 && sizes[i] < 0.4 * med) warnings.push(y + ' has only ' + sizes[i] + ' questions (typical: ' + Math.round(med) + '). Check that paper was read correctly.'); });
+  return { years, N: years.length, qs, byPaper, sizes, sizesPre, surf };
+}
+
+/* ---------- concept clustering ---------- */
+function buildFold(data, k, tau) {
+  const hist = []; for (let p = 0; p < k; p++) for (const q of data.byPaper[p]) hist.push(q);
+  const df = new Map();
+  for (const q of hist) for (const t of new Set(q.toks)) df.set(t, (df.get(t) || 0) + 1);
+  const nDoc = hist.length;
+  const idf = t => Math.log((1 + nDoc) / (1 + (df.get(t) || 0))) + 1;
+  const clusters = [], byTopic = new Map(), byLabel = new Map();
+  const addCluster = (q, v, label) => {
+    const c = { id: clusters.length, topic: q.topic, label: label || null, sum: new Map(v), norm2: 1, members: [q], pres: new Uint8Array(data.N) };
+    c.pres[q.p] = 1; clusters.push(c);
+    const key = q.topic || ''; if (!byTopic.has(key)) byTopic.set(key, []); byTopic.get(key).push(c);
+    return c;
+  };
+  const addMember = (c, q, v) => { c.norm2 += 2 * dot(v, c.sum) + 1; for (const [t, w] of v) c.sum.set(t, (c.sum.get(t) || 0) + w); c.members.push(q); c.pres[q.p] = 1; };
+  const best = (v, topic) => { let bc = null, bs = 0; for (const c of byTopic.get(topic || '') || []) { const s = dot(v, c.sum) / Math.sqrt(c.norm2); if (s > bs) { bs = s; bc = c; } } return { c: bc, s: bs }; };
+  for (const q of hist) {
+    const v = makeVec(q.toks, idf);
+    if (q.concept) {
+      const key = (q.topic || '') + '||' + normKey(q.concept);
+      let c = byLabel.get(key);
+      if (!c) { c = addCluster(q, v, q.concept); byLabel.set(key, c); } else addMember(c, q, v);
+      continue;
+    }
+    const r = best(v, q.topic);
+    if (r.c && r.s >= tau) addMember(r.c, q, v); else addCluster(q, v, null);
+  }
+  return { k, tau, clusters, idf, best, byLabel };
+}
+function labelFold(data, fold) {
+  const y = new Uint8Array(fold.clusters.length), assigned = [];
+  let matched = 0;
+  for (const q of data.byPaper[fold.k]) {
+    let c = null;
+    if (q.concept) c = fold.byLabel.get((q.topic || '') + '||' + normKey(q.concept)) || null;
+    if (!c) { const r = fold.best(makeVec(q.toks, fold.idf), q.topic); if (r.c && r.s >= fold.tau) c = r.c; }
+    if (c) { y[c.id] = 1; matched++; assigned.push(c.id); } else assigned.push(-1);
+  }
+  fold.y = y; fold.assigned = assigned; fold.matchedQs = matched; fold.nQs = assigned.length;
+}
+
+/* ---------- features ---------- */
+function topicShares(data, k) {
+  const m = new Map();
+  for (let p = 0; p < k; p++) {
+    const qs = data.byPaper[p], n = qs.length || 1, cnt = new Map();
+    for (const q of qs) { const t = q.topic || ''; cnt.set(t, (cnt.get(t) || 0) + 1); }
+    for (const [t, c] of cnt) { if (!m.has(t)) m.set(t, new Array(k).fill(0)); m.get(t)[p] = c / n; }
+  }
+  return m;
+}
+function ewMean(arr, h) { let sw = 0, s = 0; const k = arr.length; for (let i = 0; i < k; i++) { const w = Math.pow(0.5, (k - 1 - i) / h); sw += w; s += w * arr[i]; } return sw ? s / sw : 0; }
+function topicMomentum(data, k) {
+  const out = new Map();
+  for (const [t, arr] of topicShares(data, k)) out.set(t, clamp(Math.log((ewMean(arr, 3) + 0.005) / (mean(arr) + 0.005)), -1, 1));
+  return out;
+}
+const G_MAX = 25;
+const newHaz = () => ({ obs: new Float64Array(G_MAX + 2), hit: new Float64Array(G_MAX + 2), n: 0, h: 0 });
+function hazAt(hz, g) {
+  const p0 = hz.n ? hz.h / hz.n : 0.1; let o = 0, h = 0;
+  for (let d = -1; d <= 1; d++) { const gg = g + d; if (gg >= 1 && gg <= G_MAX) { o += hz.obs[gg]; h += hz.hit[gg]; } }
+  return (h + 5 * p0) / (o + 5);
+}
+function clusterFeat(c, k, hh, hz, mom) {
+  const idx = []; for (let i = 0; i < k; i++) if (c.pres[i]) idx.push(i);
+  const n = idx.length, f = idx[0], last = idx[n - 1], e = k - 1 - f;
+  const rAll = (n - 1 + 0.2) / (e + 2);
+  let sw = 0, sa = 0;
+  for (let i = f + 1; i < k; i++) { const w = Math.pow(0.5, (k - 1 - i) / hh); sw += w; sa += w * c.pres[i]; }
+  const pEw = (sa + 0.1) / (sw + 1);
+  const g = Math.min(G_MAX, k - last);
+  let miss = 1;
+  for (let t = 1; t < n; t++) { const G = idx[t] - idx[t - 1]; miss *= 1 - 0.8 * Math.exp(-((g - G) * (g - G)) / 0.72); }
+  const bump = n > 1 ? 1 - miss : 0;
+  c.idx = idx; c.n = n; c.gap = k - last;
+  return { x: [logit(rAll), logit(pEw), logit(hazAt(hz, g)), bump, mom.get(c.topic || '') || 0, Math.log(n), Math.log(1 + e)], rAll, pEw, g };
+}
+
+/* ---------- logistic regression (ridge, Newton) ---------- */
+function solve(A, b) {
+  const n = b.length, M = A.map((r, i) => [...r, b[i]]);
+  for (let i = 0; i < n; i++) {
+    let p = i; for (let r = i + 1; r < n; r++) if (Math.abs(M[r][i]) > Math.abs(M[p][i])) p = r;
+    [M[i], M[p]] = [M[p], M[i]];
+    const d = M[i][i] || 1e-9;
+    for (let r = i + 1; r < n; r++) { const f = M[r][i] / d; for (let c = i; c <= n; c++) M[r][c] -= f * M[i][c]; }
+  }
+  const x = new Array(n).fill(0);
+  for (let i = n - 1; i >= 0; i--) { let s = M[i][n]; for (let c = i + 1; c < n; c++) s -= M[i][c] * x[c]; x[i] = s / (M[i][i] || 1e-9); }
+  return x;
+}
+function fitLR(rows, ys, lam) {
+  const n = rows.length, d = rows[0].length, mu = new Array(d).fill(0), sd = new Array(d).fill(0);
+  for (const r of rows) for (let j = 0; j < d; j++) mu[j] += r[j] / n;
+  for (const r of rows) for (let j = 0; j < d; j++) sd[j] += (r[j] - mu[j]) * (r[j] - mu[j]) / n;
+  for (let j = 0; j < d; j++) sd[j] = Math.sqrt(sd[j]) || 1;
+  const Z = rows.map(r => [1].concat(r.map((x, j) => (x - mu[j]) / sd[j])));
+  const D = d + 1, w = new Array(D).fill(0);
+  w[0] = logit(ys.reduce((s, y) => s + y, 0) / n);
+  for (let it = 0; it < 40; it++) {
+    const g = new Array(D).fill(0), H = Array.from({ length: D }, () => new Array(D).fill(0));
+    for (let i = 0; i < n; i++) {
+      const z = Z[i]; let s = 0; for (let j = 0; j < D; j++) s += w[j] * z[j];
+      const p = sigmoid(s), r = p * (1 - p) + 1e-9;
+      for (let j = 0; j < D; j++) { g[j] += (ys[i] - p) * z[j]; for (let l = 0; l <= j; l++) H[j][l] += r * z[j] * z[l]; }
+    }
+    for (let j = 1; j < D; j++) { g[j] -= lam * w[j]; H[j][j] += lam; }
+    for (let j = 0; j < D; j++) { for (let l = j + 1; l < D; l++) H[j][l] = H[l][j]; H[j][j] += 1e-6; }
+    const dl = solve(H, g); let step = 0;
+    for (let j = 0; j < D; j++) { const s = clamp(dl[j], -3, 3); w[j] += s; step = Math.max(step, Math.abs(s)); }
+    if (step < 1e-5) break;
+  }
+  return { w, mu, sd };
+}
+function predictLR(m, x) { let s = m.w[0]; for (let j = 0; j < x.length; j++) s += m.w[j + 1] * (x[j] - m.mu[j]) / m.sd[j]; return sigmoid(s); }
+const priorP = f => clamp(0.5 * f.rAll + 0.5 * f.pEw + 0.15 * f.x[3], 0.001, 0.95);
+function trainOn(folds) {
+  const rows = [], ys = [];
+  for (const f of folds) if (f.y) f.feats.forEach((ft, i) => { rows.push(ft.x); ys.push(f.y[i]); });
+  const pos = ys.reduce((s, y) => s + y, 0);
+  if (rows.length < 60 || pos < 10 || pos > rows.length - 10) return null;
+  return fitLR(rows, ys, 2);
+}
+
+/* ---------- selection & evaluation ---------- */
+function pickTop(items, K, capFn) {
+  const sorted = items.slice().sort((a, b) => b.p - a.p || a.i - b.i), cnt = new Map(), out = [];
+  for (const it of sorted) {
+    const key = it.topic || '', cap = capFn ? capFn(it.topic) : Infinity, c = cnt.get(key) || 0;
+    if (c >= cap) continue;
+    cnt.set(key, c + 1); out.push(it);
+    if (out.length >= K) break;
+  }
+  return out;
+}
+function capsFor(data, k, T) {
+  const lam = new Map();
+  for (const [t, arr] of topicShares(data, k)) lam.set(t, ewMean(arr, 4) * T);
+  return t => Math.max(2, Math.ceil(lam.get(t || '') || 0) + 1);
+}
+function evalFold(data, folds, fk, K) {
+  const model = trainOn(folds.filter(f => f.k < fk.k));
+  const P = fk.feats.map(ft => model ? predictLR(model, ft.x) : priorP(ft));
+  const T = median(data.sizes.slice(Math.max(0, fk.k - 3), fk.k));
+  const cap = capsFor(data, fk.k, T), nC = fk.clusters.length;
+  const score = (vals, useCap) => {
+    const items = vals.map((p, i) => ({ i, p, topic: fk.clusters[i].topic }));
+    const top = pickTop(items, K, useCap ? cap : null), set = new Set(top.map(t => t.i));
+    let hits = 0; for (const t of top) hits += fk.y[t.i];
+    let cov = 0; for (const a of fk.assigned) if (a >= 0 && set.has(a)) cov++;
+    return { precision: top.length ? hits / K : 0, coverage: fk.nQs ? cov / fk.nQs : 0 };
+  };
+  const pos = fk.y.reduce((s, y) => s + y, 0), kk = Math.min(K, nC);
+  return {
+    k: fk.k, usedLR: !!model,
+    model: score(P, true),
+    freq: score(fk.feats.map(f => f.rAll), false),
+    recency: score(fk.feats.map(f => f.pEw), false),
+    random: { precision: nC ? pos * kk / nC / K : 0, coverage: nC && fk.nQs ? (fk.matchedQs / fk.nQs) * kk / nC : 0 },
+    novel: fk.nQs ? 1 - fk.matchedQs / fk.nQs : 0,
+  };
+}
+
+/* ---------- topic weightage forecast ---------- */
+function topicForecast(data, T) {
+  const N = data.N, sh = topicShares(data, N), topics = [...sh.keys()];
+  const cands = {
+    mean: a => mean(a), ew3: a => ewMean(a, 3), ew6: a => ewMean(a, 6), last: a => a[a.length - 1],
+    blend: a => 0.5 * ewMean(a, 4) + 0.5 * mean(a),
+    trend: a => {
+      const L = Math.min(a.length, 8), y = a.slice(-L), xm = (L - 1) / 2, ym = mean(y); let num = 0, den = 0;
+      y.forEach((v, i) => { num += (i - xm) * (v - ym); den += (i - xm) * (i - xm); });
+      return Math.max(0, ym + 0.5 * (den ? num / den : 0) * ((L + 1) / 2));
+    },
+  };
+  const avgSize = mean(data.sizes), errs = {};
+  const jStart = Math.max(3, N - 10);
+  for (const name in cands) {
+    let tot = 0, cnt = 0;
+    for (let j = jStart; j < N; j++) { let e = 0; for (const t of topics) e += Math.abs(cands[name](sh.get(t).slice(0, j)) - sh.get(t)[j]); tot += e; cnt++; }
+    errs[name] = cnt ? tot / cnt * avgSize / 2 : NaN;
+  }
+  let bestName = 'blend';
+  if (N >= 6) bestName = Object.keys(errs).reduce((a, b) => errs[b] < errs[a] ? b : a);
+  const raw = topics.map(t => Math.max(0, cands[bestName](sh.get(t)))), tot = raw.reduce((s, x) => s + x, 0) || 1;
+  const rows = topics.map((t, i) => {
+    const arr = sh.get(t), lam = raw[i] / tot * T, counts = arr.map((s, p) => s * data.sizes[p]);
+    const rec = ewMean(arr, 3), all = mean(arr) + 1e-9, ratio = rec / all;
+    return { topic: t || null, expected: lam, pAny: 1 - Math.exp(-lam), trend: lam >= 0.6 && ratio > 1.25 ? 'up' : ratio < 0.8 ? 'down' : 'flat', recent: mean(counts.slice(-5)), overall: mean(counts) };
+  }).sort((a, b) => b.expected - a.expected);
+  return { rows, model: bestName, mae: errs[bestName], maeLast: errs.last, maeMean: errs.mean, errs };
+}
+
+/* ---------- explanations ---------- */
+function termsLabel(c, surf) {
+  const arr = [...c.sum].filter(([t]) => !t.includes('_')).sort((a, b) => b[1] - a[1]).slice(0, 3);
+  return arr.map(([t]) => { const m = surf.get(t); if (!m) return t; let b = t, bc = -1; for (const [w, n] of m) if (n > bc) { b = w; bc = n; } return b; }).join(', ');
+}
+function reasonFor(c, N) {
+  const idx = c.idx, n = idx.length, g = N - idx[n - 1];
+  const gaps = []; for (let i = 1; i < n; i++) gaps.push(idx[i] - idx[i - 1]);
+  const recent3 = idx.filter(i => i >= N - 3).length;
+  if (n >= 3) {
+    const mg = median(gaps), spread = Math.max(...gaps) - Math.min(...gaps);
+    if (spread <= 2 && Math.abs(g - mg) <= 1) { const rmg = Math.round(mg); return { tag: 'due', text: 'Comes back about every ' + rmg + (rmg === 1 ? ' paper' : ' papers') + '; last seen ' + g + (g === 1 ? ' paper ago' : ' papers ago') }; }
+  }
+  if (recent3 >= 2) return { tag: 'hot', text: 'Asked in ' + recent3 + ' of the last 3 papers' };
+  if (n / N >= 0.4) return { tag: 'staple', text: 'Asked in ' + n + ' of ' + N + ' papers' };
+  if (n >= 2 && g >= 4) return { tag: 'overdue', text: 'Not seen for ' + g + ' papers' };
+  return { tag: 'watch', text: n === 1 ? 'Seen once before' : 'Seen ' + n + ' times' };
+}
+
+/* ---------- main ---------- */
+async function analyze(records, opts, hooks) {
+  opts = opts || {}; hooks = hooks || {};
+  const K = opts.K || 40, tau = opts.tau || 0.35, HH = 5, warnings = [];
+  const excluded = (opts.excluded || []).map(normKey).filter(Boolean);
+  const data = prepare(records, new Set(excluded), warnings);
+  const N = data.N;
+  if (N < 3) throw new Error('Need at least 3 different years of papers (found ' + N + ').');
+  if (N < 8) warnings.push('Only ' + N + ' papers: too few to test the model on past papers, and the forecast is rough. 15–20 papers works best.');
+  const T = opts.T || Math.max(1, Math.round(median(data.sizesPre.slice(-3))));
+  const j0 = 3, folds = [], haz = newHaz();
+  for (let k = j0; k <= N; k++) {
+    if (hooks.progress) await hooks.progress(k - j0 + 1, N - j0 + 2, k);
+    const fold = buildFold(data, k, tau), mom = topicMomentum(data, k);
+    fold.feats = fold.clusters.map(c => clusterFeat(c, k, HH, haz, mom));
+    if (k < N) {
+      labelFold(data, fold);
+      fold.feats.forEach((f, i) => { haz.obs[f.g]++; haz.n++; if (fold.y[i]) { haz.hit[f.g]++; haz.h++; } });
+    }
+    folds.push(fold);
+  }
+  const evals = [];
+  for (let k = Math.max(j0 + 4, N - 8); k < N; k++) { evals.push(evalFold(data, folds, folds.find(f => f.k === k), K)); if (hooks.tick) await hooks.tick(); }
+  const agg = key => ({ precision: mean(evals.map(e => e[key].precision)), coverage: mean(evals.map(e => e[key].coverage)) });
+  const backtest = evals.length ? { n: evals.length, from: data.years[evals[0].k], to: data.years[N - 1], usedLR: evals.every(e => e.usedLR), model: agg('model'), random: agg('random'), freq: agg('freq'), recency: agg('recency'), novel: mean(evals.map(e => e.novel)), per: evals.map(e => ({ year: data.years[e.k], precision: e.model.precision, random: e.random.precision })) } : null;
+  if (hooks.progress) await hooks.progress(N - j0 + 2, N - j0 + 2, 'final');
+
+  const finalFold = folds.find(f => f.k === N), model = trainOn(folds.filter(f => f.y));
+  const P = finalFold.feats.map(ft => model ? predictLR(model, ft.x) : priorP(ft));
+  if (!model) warnings.push('Not enough repeated questions to fit the model, so simple frequency-and-recency weights were used.');
+  const tf = topicForecast(data, T);
+  const lam = new Map(tf.rows.map(r => [r.topic || '', r.expected]));
+  const cap = t => Math.max(2, Math.ceil(lam.get(t || '') || 0) + 1);
+  const items = P.map((p, i) => ({ i, p, topic: finalFold.clusters[i].topic })).filter(it => it.p >= 0.02);
+  const top = pickTop(items, K, cap);
+  if (top.length < K) warnings.push('Only ' + top.length + ' concepts have at least a 2% chance, so the list is shorter than ' + K + '.');
+  const picks = top.map((it, r) => {
+    const c = finalFold.clusters[it.i], anchor = c.members[c.members.length - 1], others = [];
+    for (let m = c.members.length - 2; m >= 0 && others.length < 2; m--) if (c.members[m].p !== anchor.p && !others.some(o => o.year === c.members[m].year)) others.push({ year: c.members[m].year, text: c.members[m].text });
+    return { rank: r + 1, topic: c.topic, label: c.label || termsLabel(c, data.surf), p: it.p, n: c.n, years: c.idx.map(i => data.years[i]), reason: reasonFor(c, N), anchor: { year: anchor.year, text: anchor.text }, others };
+  });
+  const totalQ = data.qs.length;
+  return {
+    meta: { years: data.years, N, nQuestions: totalQ, T, K, tau, targetYear: data.years[N - 1] + 1, topics: tf.rows.filter(r => r.topic).length, concepts: finalFold.clusters.length },
+    backtest, topics: tf.rows, topicModel: { name: tf.model, mae: tf.mae, maeLast: tf.maeLast, maeMean: tf.maeMean },
+    picks, expectedHits: picks.reduce((s, p) => s + p.p, 0), warnings,
+  };
+}
+
+/* ---------- demo data (synthetic; for trying the tool) ---------- */
+const DEMO = [
+  ['Kinematics', 'A ball is thrown vertically upward with a speed of {v} m/s. Find the maximum height reached and the time taken to return.'],
+  ['Kinematics', 'A projectile is fired at an angle of {a} degrees with the horizontal at {v} m/s. Calculate its time of flight and horizontal range.'],
+  ['Kinematics', 'A boat crosses a river of width {w} m flowing at {u} m/s. Find the relative velocity and the time taken to cross.'],
+  ['Laws of Motion', 'A block of mass {m} kg rests on an inclined plane of angle {a} degrees. If the coefficient of friction is {mu}, find the friction force.'],
+  ['Laws of Motion', 'Two blocks of masses {m} kg and {M} kg are connected by a string over a smooth pulley. Find the acceleration and the tension in the string.'],
+  ['Laws of Motion', 'A person of mass {m} kg stands in a lift accelerating upward at {u} m/s2. Find the apparent weight of the person.'],
+  ['Work Energy Power', 'A body of mass {m} kg moving at {v} m/s has its kinetic energy doubled. Find the work done on the body.'],
+  ['Work Energy Power', 'A spring compressed by {x} cm stores potential energy. Find the work done if the force applied is {F} N.'],
+  ['Work Energy Power', 'A pump lifts {m} kg of water through {h} m in {t} s. Find the power of the pump.'],
+  ['Rotational Motion', 'Find the moment of inertia of a uniform disc of mass {m} kg and radius {r} cm about an axis through its centre.'],
+  ['Rotational Motion', 'A ring rolls without slipping down a plane. Find the ratio of its rotational kinetic energy to its total kinetic energy.'],
+  ['Rotational Motion', 'A particle of mass {m} kg moves in a circle of radius {r} m with speed {v} m/s. Find its angular momentum about the centre.'],
+  ['Gravitation', 'Calculate the escape velocity of a body from a planet whose mass is {n} times the mass of earth and whose radius is the same.'],
+  ['Gravitation', 'A satellite orbits the earth at a height of {h} km above the surface. Find its orbital velocity and time period.'],
+  ['Gravitation', 'Find the acceleration due to gravity at a depth of {d} km below the surface of the earth.'],
+  ['Thermodynamics', 'One mole of an ideal gas expands isothermally to twice its volume at {T} K. Find the work done by the gas.'],
+  ['Thermodynamics', 'A Carnot engine works between temperatures {T1} K and {T2} K. Find its efficiency and the heat rejected per cycle.'],
+  ['Thermodynamics', 'A gas undergoes a cyclic process shown in the p-v diagram. Find the net work done during the cycle.'],
+  ['Oscillations', 'A particle executes simple harmonic motion with amplitude {A} cm and time period {T} s. Find its maximum velocity.'],
+  ['Oscillations', 'Find the time period of a simple pendulum of length {l} m suspended in a car moving with uniform acceleration.'],
+  ['Oscillations', 'A mass of {m} kg attached to a spring of spring constant {k} N/m oscillates. Find its angular frequency.'],
+  ['Electrostatics', 'Two point charges of {q} microcoulomb and {q2} microcoulomb are placed {d} cm apart. Find the electric field at the midpoint.'],
+  ['Electrostatics', 'Use Gauss law to find the electric flux through a closed surface enclosing a charge of {q} microcoulomb.'],
+  ['Electrostatics', 'An electric dipole of dipole moment {p} C m is placed in a uniform electric field. Find the torque acting on the dipole.'],
+  ['Current Electricity', 'Four resistors are connected in a Wheatstone bridge. Find the value of the unknown resistance for balance.'],
+  ['Current Electricity', 'A cell of emf {E} V and internal resistance {r} ohm is connected to an external resistor. Find the terminal voltage.'],
+  ['Current Electricity', 'Find the drift velocity of electrons in a copper wire carrying a current of {I} A.'],
+  ['Ray Optics', 'An object is placed {u} cm in front of a concave mirror of focal length {f} cm. Find the image distance and nature of the image.'],
+  ['Ray Optics', 'Light passes through a glass prism of refractive index {n}. Find the angle of minimum deviation.'],
+  ['Ray Optics', 'A ray of light travelling in glass strikes the interface with air. Find the critical angle for total internal reflection.'],
+  ['Nuclei', 'The half life of a radioactive sample is {T} days. Find the fraction remaining after {t} days.'],
+  ['Nuclei', 'Calculate the binding energy per nucleon of a nucleus given the mass defect of {d} u.'],
+  ['Nuclei', 'In a nuclear reactor uranium undergoes fission. Find the energy released per fission event.'],
+  ['Semiconductors & Electronics', 'Draw the truth table of a NAND gate and identify its logic operation.'],
+  ['Semiconductors & Electronics', 'A p-n junction diode is forward biased. Explain the depletion layer width and the barrier potential.'],
+  ['Semiconductors & Electronics', 'In a common emitter transistor amplifier, find the voltage gain if the current gain is {b}.'],
+];
+const DEMO_KINDS = ['steady', 'cycle', 'rise', 'cycle', 'fade', 'low', 'steady', 'cycle', 'rise', 'low', 'fade', 'steady'];
+function makeDemo(seed) {
+  const R = rng(seed || 7), pick = a => a[Math.floor(R() * a.length)];
+  const POOL = { a: [30, 37, 45, 53, 60], mu: [0.2, 0.25, 0.3, 0.4, 0.5], n: [2, 3, 4, 9], d: [50, 100, 200, 400] }, DEF = [2, 3, 4, 5, 6, 8, 10, 12, 15, 20, 25, 30, 40, 50, 60, 100];
+  const fill = tpl => tpl.replace(/\{(\w+)\}/g, (_, k) => pick(POOL[k] || DEF));
+  const y0 = 2006, y1 = 2026, records = [];
+  const NQ = ['potential', 'energy', 'momentum', 'period', 'frequency', 'pressure', 'charge', 'current', 'field', 'torque', 'wavelength', 'speed', 'force', 'power', 'flux'];
+  const NO = ['uniform rod', 'thin ring', 'metallic sphere', 'copper wire', 'glass block', 'gas cylinder', 'light bulb', 'magnetic needle', 'steel wire', 'iron bar', 'water jet', 'liquid drop', 'wooden cube', 'hollow shell', 'long cylinder'];
+  const NC = ['when it is heated by 20 K', 'at a distance of 3 m', 'after 5 s', 'if its length is doubled', 'if its radius is halved', 'when the temperature rises', 'if its mass is increased', 'near the surface', 'in a vacuum chamber', 'under constant force', 'when it moves slowly', 'if it is cut into two equal parts'];
+  const topics = [...new Set(DEMO.map(d => d[0]))];
+  for (let y = y0; y <= y1; y++) {
+    const t = y - y0, span = y1 - y0;
+    let n = 0;
+    DEMO.forEach((d, i) => {
+      const kind = DEMO_KINDS[i % 12], per = 3 + (i % 3), ph = i % per;
+      let p;
+      if (kind === 'steady') p = 0.5; else if (kind === 'low') p = 0.12;
+      else if (kind === 'rise') p = 0.08 + 0.6 * t / span; else if (kind === 'fade') p = 0.66 - 0.56 * t / span;
+      else p = ((t - ph) % per === 0) ? 0.85 : 0.05;
+      if (R() < p) { records.push({ year: y, text: fill(d[1]), topic: d[0], concept: null }); n++; if (R() < 0.12) { records.push({ year: y, text: fill(d[1]), topic: d[0], concept: null }); n++; } }
+    });
+    while (n < 30) { records.push({ year: y, text: 'Find the ' + pick(NQ) + ' of a ' + pick(NO) + ' ' + pick(NC) + '.', topic: pick(topics), concept: null }); n++; }
+  }
+  return records;
+}
+
+const EF = { parseDelimited, recordsFromRows, recordsFromObjects, parsePaperText, yearFromHeader, compileSyllabus, tagWithSyllabus, PHYSICS_SYLLABUS, featureTokens, analyze, makeDemo, kwRegex, fitLR, predictLR, normKey };
+if (typeof module !== 'undefined' && module.exports) module.exports = EF; else root.EF = EF;
+})(typeof window !== 'undefined' ? window : globalThis);
+
+</script>
+<script>
+(function () {
+  'use strict';
+  const $ = (s, r) => (r || document).querySelector(s);
+  const $$ = (s, r) => Array.from((r || document).querySelectorAll(s));
+  const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
+  const fmtPct = p => (p * 100).toFixed(p >= 0.1 ? 0 : 1) + '%';
+
+  let sources = [];      // [{name, records, warn, n}]
+  let lastResult = null;
+  let shuffleSeed = 1;
+  let downloadsCap = null;
+  let physicsSyllabus = null;
+  try { physicsSyllabus = EF.compileSyllabus(EF.PHYSICS_SYLLABUS); } catch (e) {}
+
+  function rng(seed) { let a = seed >>> 0; return function () { a = (a + 0x6D2B79F5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
+
+  (async () => {
+    try {
+      if (window.claude && window.claude.use) downloadsCap = await window.claude.use('downloads');
+    } catch (e) { downloadsCap = null; }
+    $$('.dl-btn').forEach(b => b.hidden = !downloadsCap);
+  })();
+
+  function filenameYear(name) { const m = String(name || '').match(/\b(19[89]\d|20[0-4]\d)\b/); return m ? parseInt(m[1], 10) : null; }
+  function looksLikeTable(text) { const first = text.split(/\r?\n/, 1)[0] || ''; return /[,\t;]/.test(first) && /year|question|topic|chapter/i.test(first); }
+  const UNSUPPORTED_EXT = { doc: 'Old-format Word (.doc)', ppt: 'PowerPoint', pptx: 'PowerPoint', xls: 'Excel', xlsx: 'Excel', heic: 'HEIC image (export as JPG/PNG first)' };
+  const IMG_EXT = { jpg: 1, jpeg: 1, png: 1, bmp: 1, gif: 1, webp: 1 };
+
+  function setIngestStatus(text) {
+    const box = $('#ingestStatus');
+    if (!text) { box.hidden = true; box.innerHTML = ''; return; }
+    box.hidden = false; box.innerHTML = '';
+    box.appendChild(el('span', 'spin'));
+    box.appendChild(el('span', null, text));
+  }
+
+  async function extractPdfText(file) {
+    if (!window.__pdfjsReady) {
+      const start = Date.now();
+      while (!window.__pdfjsReady && Date.now() - start < 8000) await new Promise(r => setTimeout(r, 150));
+    }
+    if (!window.__pdfjsReady || !window.__pdfjsLib) throw new Error('PDF_LIB_UNAVAILABLE');
+    const pdfjsLib = window.__pdfjsLib;
+    const buf = await file.arrayBuffer();
+    const doc = await pdfjsLib.getDocument({ data: buf }).promise;
+    const pages = [];
+    for (let p = 1; p <= doc.numPages; p++) {
+      const page = await doc.getPage(p);
+      const content = await page.getTextContent();
+      const items = content.items.filter(it => it.str !== undefined);
+      let lines = [], curY = null, curLine = [];
+      const flushLine = () => { if (curLine.length) lines.push(curLine.join('')); curLine = []; };
+      for (const it of items) {
+        const y = Math.round(it.transform[5]);
+        if (curY === null) curY = y;
+        if (Math.abs(y - curY) > 2) { flushLine(); curY = y; }
+        curLine.push(it.str);
+        if (it.hasEOL) { flushLine(); curY = null; }
+      }
+      flushLine();
+      pages.push(lines.join('\n'));
+    }
+    return { text: pages.join('\n\n'), doc };
+  }
+
+  async function renderPdfPageToCanvas(doc, pageNum, scale) {
+    const page = await doc.getPage(pageNum);
+    const viewport = page.getViewport({ scale: scale || 2.5 });
+    const canvas = document.createElement('canvas');
+    canvas.width = viewport.width; canvas.height = viewport.height;
+    await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
+    return canvas;
+  }
+
+  let ocrWorker = null;
+  async function getOcrWorker(onProgress) {
+    if (typeof Tesseract === 'undefined') throw new Error('OCR_LIB_UNAVAILABLE');
+    if (!ocrWorker) ocrWorker = await Tesseract.createWorker('eng', 1, { logger: onProgress });
+    return ocrWorker;
+  }
+  async function ocrSource(source, label, onProgress) {
+    const worker = await getOcrWorker(onProgress);
+    const { data } = await worker.recognize(source);
+    return data.text || '';
+  }
+
+  async function extractDocxText(file) {
+    if (typeof mammoth === 'undefined') throw new Error('DOCX_LIB_UNAVAILABLE');
+    const buf = await file.arrayBuffer();
+    const result = await mammoth.extractRawText({ arrayBuffer: buf });
+    return result.value || '';
+  }
+
+  async function ingestFile(file, progressCb) {
+    const name = file.name;
+    const ext = (name.match(/\.([a-z0-9]+)$/i) || [, ''])[1].toLowerCase();
+    const report = t => { if (progressCb) progressCb(name + ': ' + t); };
+
+    if (UNSUPPORTED_EXT[ext]) {
+      return { name, records: [], warn: name + ': ' + UNSUPPORTED_EXT[ext] + ' isn\u2019t supported \u2014 try a text-based PDF, a CSV, or paste the questions instead.', n: 0 };
+    }
+
+    if (ext === 'docx') {
+      let text;
+      report('reading Word file\u2026');
+      try { text = await extractDocxText(file); }
+      catch (e) {
+        const msg = (e && e.message === 'DOCX_LIB_UNAVAILABLE')
+          ? name + ': the Word reader is still loading \u2014 wait a few seconds and try again.'
+          : name + ': couldn\u2019t read this Word file \u2014 try pasting the text instead.';
+        return { name, records: [], warn: msg, n: 0 };
+      }
+      const dy = filenameYear(name);
+      const parsed = EF.parsePaperText(text, dy);
+      const warn = !parsed.records.length ? name + ": couldn't find a year \u2014 rename the file to include the year (e.g. 2019.docx) or add a year heading inside it." : (parsed.noYear ? 'Skipped ' + parsed.noYear + ' line(s) with no detectable year.' : null);
+      return { name, records: parsed.records, warn, n: parsed.records.length };
+    }
+
+    if (ext === 'pdf') {
+      let text, doc;
+      report('reading PDF\u2026');
+      try { ({ text, doc } = await extractPdfText(file)); }
+      catch (e) {
+        const msg = (e && e.message === 'PDF_LIB_UNAVAILABLE')
+          ? name + ': the PDF reader is still loading \u2014 wait a few seconds and try uploading again.'
+          : name + ': couldn\u2019t read this PDF \u2014 try pasting the text instead.';
+        return { name, records: [], warn: msg, n: 0 };
+      }
+      if (text.replace(/\s/g, '').length < 40) {
+        // No text layer -> fall back to OCR, page by page.
+        try {
+          report('no text layer found, scanning with OCR (this can take a while)\u2026');
+          const parts = [];
+          for (let p = 1; p <= doc.numPages; p++) {
+            report('OCR on page ' + p + ' of ' + doc.numPages + '\u2026');
+            let canvas;
+            try { canvas = await renderPdfPageToCanvas(doc, p); }
+            catch (renderErr) { throw new Error('RENDER_FAILED'); }
+            const t = await ocrSource(canvas, name, m => { if (m.status === 'recognizing text') report('OCR on page ' + p + ' of ' + doc.numPages + ' \u2014 ' + Math.round(m.progress * 100) + '%'); });
+            parts.push(t);
+          }
+          text = parts.join('\n\n');
+        } catch (e) {
+          const msg = (e && e.message === 'OCR_LIB_UNAVAILABLE')
+            ? name + ': found no selectable text, and the OCR reader is still loading \u2014 wait a moment and try again.'
+            : (e && e.message === 'RENDER_FAILED')
+            ? name + ': found no selectable text, and this browser couldn\u2019t render the scanned page for OCR \u2014 try converting the page(s) to a photo (JPG/PNG) and uploading that instead, or paste the questions.'
+            : name + ': found no selectable text, and OCR couldn\u2019t read it either \u2014 try a clearer scan, or paste the questions instead.';
+          return { name, records: [], warn: msg, n: 0 };
+        }
+      }
+      const dy = filenameYear(name);
+      const parsed = EF.parsePaperText(text, dy);
+      const warn = !parsed.records.length ? name + ": couldn't find a year \u2014 rename the file to include the year (e.g. 2019.pdf) or make sure each paper has a year heading." : (parsed.noYear ? 'Skipped ' + parsed.noYear + ' line(s) with no detectable year.' : null);
+      return { name, records: parsed.records, warn, n: parsed.records.length };
+    }
+
+    if (IMG_EXT[ext]) {
+      let text;
+      try {
+        report('reading image with OCR (this can take a while)\u2026');
+        text = await ocrSource(file, name, m => { if (m.status === 'recognizing text') report('OCR \u2014 ' + Math.round(m.progress * 100) + '%'); });
+      } catch (e) {
+        const msg = (e && e.message === 'OCR_LIB_UNAVAILABLE')
+          ? name + ': the OCR reader is still loading \u2014 wait a moment and try again.'
+          : name + ': OCR couldn\u2019t read this image \u2014 try a clearer, well-lit photo, or paste the questions instead.';
+        return { name, records: [], warn: msg, n: 0 };
+      }
+      if (text.replace(/\s/g, '').length < 20) {
+        return { name, records: [], warn: name + ': OCR found little to no text in this image \u2014 try a clearer, well-lit, straight-on photo.', n: 0 };
+      }
+      const dy = filenameYear(name);
+      const parsed = EF.parsePaperText(text, dy);
+      const warn = !parsed.records.length ? name + ": read the image but couldn't find a year \u2014 rename the file to include the year (e.g. 2019.jpg) or make sure the paper shows a year heading." : (parsed.noYear ? 'Skipped ' + parsed.noYear + ' line(s) with no detectable year.' : null);
+      return { name, records: parsed.records, warn, n: parsed.records.length };
+    }
+
+    const text = await file.text();
+    let recs = [], warn = null;
+    if (looksLikeTable(text)) {
+      const parsed = EF.recordsFromRows(EF.parseDelimited(text));
+      recs = parsed.records;
+      if (parsed.error) warn = file.name + ': ' + parsed.error;
+    } else {
+      const dy = filenameYear(file.name);
+      const parsed = EF.parsePaperText(text, dy);
+      recs = parsed.records;
+      if (!recs.length) warn = file.name + ": couldn't find a year in this file — rename it to include the year (e.g. 2019.txt) or put a year heading inside it.";
+      else if (parsed.noYear) warn = file.name + ': skipped ' + parsed.noYear + ' line(s) with no detectable year.';
+    }
+    return { name: file.name, records: recs, warn, n: recs.length };
+  }
+
+  function autoTag(records) {
+    const customTxt = $('#customSyllabus').value.trim();
+    let syl = physicsSyllabus;
+    if (customTxt) { try { syl = EF.compileSyllabus(customTxt); } catch (e) {} }
+    if (!syl) return records;
+    return records.map(r => r.topic ? r : Object.assign({}, r, { topic: EF.tagWithSyllabus(r.text, syl) || null }));
+  }
+
+  function renderSources() {
+    const box = $('#sourceList'); box.innerHTML = '';
+    let total = 0;
+    sources.forEach((s, i) => {
+      total += s.n;
+      const row = el('div', 'src-row');
+      row.appendChild(el('span', 'src-name', s.name));
+      row.appendChild(el('span', 'src-n', s.n + (s.n === 1 ? ' question' : ' questions')));
+      const rm = el('button', 'src-rm', '×'); rm.type = 'button'; rm.setAttribute('aria-label', 'Remove ' + s.name);
+      rm.onclick = () => { sources.splice(i, 1); renderSources(); };
+      row.appendChild(rm);
+      box.appendChild(row);
+      if (s.warn) { const w = el('div', 'src-warn', s.warn); box.appendChild(w); }
+    });
+    const years = new Set(sources.flatMap(s => s.records).map(r => r.year).filter(Boolean));
+    $('#sourceSummary').textContent = sources.length ? total + ' question' + (total === 1 ? '' : 's') + ' from ' + sources.length + ' source' + (sources.length === 1 ? '' : 's') + ' \u00b7 ' + years.size + ' year' + (years.size === 1 ? '' : 's') + ' detected' : '';
+    const needQ = Math.max(0, 15 - total), needY = Math.max(0, 3 - years.size);
+    const hint = $('#sourceHint');
+    if (!sources.length || (!needQ && !needY)) { hint.hidden = true; }
+    else {
+      const parts = [];
+      if (needQ > 0) parts.push(needQ + ' more question' + (needQ === 1 ? '' : 's'));
+      if (needY > 0) parts.push('paper' + (needY === 1 ? '' : 's') + ' from ' + needY + ' more year' + (needY === 1 ? '' : 's'));
+      hint.hidden = false;
+      hint.textContent = 'Add ' + parts.join(' and ') + ' to start \u2014 the forecast needs at least 15 questions across at least 3 different years.';
+    }
+    $('#analyzeBtn').disabled = needQ > 0 || needY > 0;
+  }
+
+  $('#fileInput').addEventListener('change', async e => {
+    const files = Array.from(e.target.files || []);
+    $('#analyzeBtn').disabled = true;
+    for (const f of files) {
+      sources.push(await ingestFile(f, setIngestStatus));
+      renderSources();
+    }
+    setIngestStatus(null);
+    if (ocrWorker) { try { await ocrWorker.terminate(); } catch (err) {} ocrWorker = null; }
+    e.target.value = '';
+    renderSources();
+  });
+
+  $('#addPasteBtn').addEventListener('click', () => {
+    const text = $('#pasteArea').value;
+    if (!text.trim()) return;
+    const dy = parseInt($('#pasteYear').value, 10) || null;
+    const parsed = EF.parsePaperText(text, dy);
+    const warn = !parsed.records.length ? "Couldn't find a year — add a year heading (e.g. a line saying 2021) or fill in the year field above." : (parsed.noYear ? 'Skipped ' + parsed.noYear + ' line(s) with no detectable year.' : null);
+    sources.push({ name: 'Pasted text', records: parsed.records, warn, n: parsed.records.length });
+    $('#pasteArea').value = ''; $('#pasteYear').value = '';
+    renderSources();
+  });
+
+  $('#demoBtn').addEventListener('click', () => {
+    sources = [{ name: 'Demo dataset (synthetic, 2006–2026)', records: EF.makeDemo(11), warn: null, n: 0 }];
+    sources[0].n = sources[0].records.length;
+    renderSources();
+    runAnalysis();
+  });
+
+  $('#advancedToggle').addEventListener('click', () => {
+    const p = $('#advancedPanel'); const open = p.hidden;
+    p.hidden = !open;
+    $('#advancedToggle').setAttribute('aria-expanded', String(open));
+  });
+
+  function setProgress(frac, label) {
+    $('#progressFill').style.width = Math.round(frac * 100) + '%';
+    $('#statusText').textContent = label;
+  }
+
+  async function runAnalysis() {
+    const records = autoTag(sources.flatMap(s => s.records));
+    const K = clampInt($('#kInput').value, 40, 10, 60);
+    const excluded = $('#excludeInput').value.split(',').map(s => s.trim()).filter(Boolean);
+    $('#analyzeBtn').disabled = true;
+    $('#errorBox').hidden = true;
+    $('#progressWrap').hidden = false;
+    $('#results').hidden = true;
+    setProgress(0.02, 'Reading papers…');
+    try {
+      const result = await EF.analyze(records, { K, excluded }, {
+        progress: async (i, total, label) => { setProgress(0.05 + 0.85 * (i / total), 'Building model — fold ' + i + ' of ' + total + '…'); await new Promise(r => setTimeout(r, 0)); },
+        tick: async () => { await new Promise(r => setTimeout(r, 0)); },
+      });
+      setProgress(1, 'Done.');
+      lastResult = result;
+      shuffleSeed = 1;
+      renderResults(result);
+      $('#progressWrap').hidden = true;
+      $('#results').hidden = false;
+      $('#results').scrollIntoView({ behavior: 'smooth', block: 'start' });
+      try { localStorage.setItem('ef_last', JSON.stringify({ records, K, excluded, t: Date.now() })); } catch (e) {}
+    } catch (err) {
+      $('#progressWrap').hidden = true;
+      $('#errorBox').hidden = false;
+      $('#errorBox').textContent = err && err.message ? err.message : 'Something went wrong reading those papers.';
+    }
+    $('#analyzeBtn').disabled = false;
+  }
+  function clampInt(v, def, lo, hi) { v = parseInt(v, 10); if (!v && v !== 0) return def; return Math.max(lo, Math.min(hi, v)); }
+
+  $('#analyzeBtn').addEventListener('click', runAnalysis);
+
+  function reasonClass(tag) { return tag === 'due' || tag === 'hot' ? 'gold' : tag === 'staple' ? 'cyan' : 'dim'; }
+
+  function renderResults(r) {
+    const m = r.meta;
+    $('#statYears').textContent = m.years[0] + '–' + m.years[m.N - 1];
+    $('#statPapers').textContent = m.N + ' papers, ' + m.nQuestions.toLocaleString() + ' questions';
+    $('#statTarget').textContent = m.targetYear;
+    if (r.backtest && r.backtest.n >= 2) {
+      const bt = r.backtest;
+      $('#statBacktest').textContent = fmtPct(bt.model.precision) + ' vs ' + fmtPct(bt.random.precision) + ' random';
+      $('#backtestNote').textContent = 'Tested by hiding each of the last ' + bt.n + ' papers (' + bt.from + '–' + bt.to + ') and checking how often the top ' + m.K + ' picks, trained only on earlier papers, matched what was actually asked.';
+      $('#backtestBlock').hidden = false;
+    } else {
+      $('#backtestBlock').hidden = true;
+    }
+
+    const warnBox = $('#warnings'); warnBox.innerHTML = ''; warnBox.hidden = !r.warnings.length;
+    r.warnings.forEach(w => warnBox.appendChild(el('div', 'warn-item', w)));
+
+    const tf = $('#topicForecast'); tf.innerHTML = '';
+    const top = r.topics.filter(t => t.topic).slice(0, 12);
+    const max = Math.max(1, ...top.map(t => t.expected));
+    top.forEach(t => {
+      const row = el('div', 'bar-row');
+      const label = el('div', 'bar-label'); label.appendChild(el('span', null, t.topic));
+      const trend = el('span', 'trend trend-' + t.trend, t.trend === 'up' ? '▲' : t.trend === 'down' ? '▼' : '—');
+      label.appendChild(trend);
+      row.appendChild(label);
+      const track = el('div', 'bar-track');
+      const fill = el('div', 'bar-fill'); fill.style.width = Math.max(4, (t.expected / max) * 100) + '%';
+      track.appendChild(fill); row.appendChild(track);
+      row.appendChild(el('div', 'bar-n', t.expected.toFixed(1) + ' expected'));
+      tf.appendChild(row);
+    });
+
+    renderPicks(r);
+  }
+
+  function renderPicks(r) {
+    const rnd = rng(shuffleSeed);
+    const groups = new Map();
+    r.picks.forEach(p => { const k = p.topic || 'Other'; if (!groups.has(k)) groups.set(k, []); groups.get(k).push(p); });
+    const order = [...groups.entries()].sort((a, b) => Math.min(...a[1].map(p => p.rank)) - Math.min(...b[1].map(p => p.rank)));
+
+    const box = $('#picksContainer'); box.innerHTML = '';
+    order.forEach(([topic, picks]) => {
+      const section = el('div', 'topic-group');
+      const head = el('div', 'topic-head');
+      head.appendChild(el('h3', null, topic));
+      head.appendChild(el('span', 'topic-count', picks.length + (picks.length === 1 ? ' pick' : ' picks')));
+      section.appendChild(head);
+      const grid = el('div', 'picks-grid');
+      picks.sort((a, b) => a.rank - b.rank).forEach(p => grid.appendChild(pickCard(p, rnd)));
+      section.appendChild(grid);
+      box.appendChild(section);
+    });
+  }
+
+  function pickCard(p, rnd) {
+    const card = el('div', 'pick-card');
+    const top = el('div', 'pick-top');
+    const badge = el('div', 'rank-badge rank-' + reasonClass(p.reason.tag), '#' + p.rank);
+    top.appendChild(badge);
+    const meter = el('div', 'meter');
+    const fill = el('div', 'meter-fill'); fill.style.width = (p.p * 100) + '%';
+    meter.appendChild(fill);
+    const pct = el('div', 'meter-pct', fmtPct(p.p));
+    top.appendChild(meter); top.appendChild(pct);
+    card.appendChild(top);
+    card.appendChild(el('div', 'pick-label', p.label || p.topic || 'Concept'));
+    card.appendChild(el('div', 'pick-reason reason-' + reasonClass(p.reason.tag), p.reason.text));
+    const pool = [p.anchor].concat(p.others || []);
+    const ex = pool[Math.floor(rnd() * pool.length)] || p.anchor;
+    const quote = el('div', 'pick-example');
+    quote.appendChild(el('div', 'pick-q', '“' + ex.text + '”'));
+    quote.appendChild(el('div', 'pick-year', 'Asked in ' + ex.year + (p.n > 1 ? ' · appeared ' + p.n + '× (' + p.years[0] + '–' + p.years[p.years.length - 1] + ')' : '')));
+    card.appendChild(quote);
+    return card;
+  }
+
+  $('#shuffleBtn').addEventListener('click', () => { if (!lastResult) return; shuffleSeed++; renderPicks(lastResult); });
+
+  function toCSV(rows) {
+    const esc = v => { v = v == null ? '' : String(v); return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; };
+    return rows.map(r => r.map(esc).join(',')).join('\r\n');
+  }
+  async function doDownload(filename, csv) {
+    if (!downloadsCap) return;
+    try { await downloadsCap.save({ filename, data: csv }); } catch (e) {}
+  }
+  $('#dlTemplateBtn').addEventListener('click', () => {
+    const rows = [
+      ['year', 'question', 'topic', 'concept'],
+      [2010, 'Find the moment of inertia of a uniform disc about its central axis.', 'Rotational Motion', 'moment of inertia'],
+      [2013, 'A ball is thrown vertically upward at 20 m/s. Find the maximum height reached.', 'Kinematics', 'projectile motion'],
+      [2018, 'State and use Gauss\u2019s law to find the field of a uniformly charged sphere.', 'Electrostatics', ''],
+    ];
+    doDownload('past-papers-template.csv', toCSV(rows));
+  });
+  $('#dlExportBtn').addEventListener('click', () => {
+    if (!lastResult) return;
+    const rows = [['rank', 'topic', 'concept', 'probability_pct', 'reason', 'example_year', 'example_question']];
+    lastResult.picks.forEach(p => rows.push([p.rank, p.topic || '', p.label || '', (p.p * 100).toFixed(1), p.reason.text, p.anchor.year, p.anchor.text]));
+    doDownload('exam-forecast-top-' + lastResult.picks.length + '.csv', toCSV(rows));
+  });
+
+  renderSources();
+})();
+
+</script>
+</body>
+</html>
