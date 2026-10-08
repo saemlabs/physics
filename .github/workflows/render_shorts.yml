@@ -1,0 +1,86 @@
+name: Bulk Render Physics Shorts
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - '**.md'
+      - '.gitignore'
+      - 'LICENSE'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  batch_render:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Validate Required Files
+        run: |
+          if [ ! -f "content_batch.csv" ]; then
+            echo "::error::content_batch.csv is missing!" && exit 1
+          fi
+          if [ ! -f "saem_voice_sample.wav" ]; then
+            echo "::error::saem_voice_sample.wav is missing!" && exit 1
+          fi
+
+      - name: Install System Dependencies
+        run: |
+          sudo DEBIAN_FRONTEND=noninteractive apt-get update -y
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            ffmpeg \
+            texlive-latex-extra \
+            texlive-fonts-recommended \
+            texlive-fonts-extra \
+            texlive-science \
+            tipa \
+            dvisvgm \
+            cm-super \
+            libcairo2-dev \
+            libpango1.0-dev \
+            libopenblas-dev \
+            gfortran \
+            pkg-config
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+
+      - name: Install Python Packages
+        run: |
+          python -m pip install --upgrade "pip<24.1"
+          pip install --prefer-binary "setuptools<70.0.0" wheel "numpy<2.0.0" Cython pyworld
+          pip install --prefer-binary -r requirements.txt
+
+      - name: Cache AI Model Weights
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/huggingface
+            ~/.local/share/tts
+          key: ${{ runner.os }}-ai-models-xtts-v2
+
+      - name: Run Batch Video Production
+        env:
+          COQUI_TOS_AGREED: "1"
+        run: |
+          mkdir -p output_shorts
+          python batch_runner.py
+
+      - name: Upload Rendered Shorts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: physics-shorts-output-${{ github.run_id }}
+          path: output_shorts/*.mp4
+          retention-days: 7
