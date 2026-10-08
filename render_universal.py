@@ -1,5 +1,5 @@
 """
-render_universal.py — Master 3b1b Manim rendering engine (v2).
+render_universal.py — Master 3b1b Manim rendering engine (v2.1).
 
 Reads row parameters from environment variables injected by batch_runner.py:
 
@@ -15,27 +15,11 @@ Reads row parameters from environment variables injected by batch_runner.py:
     AUDIO_DURATION    Total scene duration in seconds
     SAFE_MODE         "1" (default) prevents a bad row from crashing the batch
     HINDI_FONT        Optional font path for Devanagari headers
-
-v2 highlights
--------------
-  1. PYQ + VISUAL_DATA_JSON now render together — question panel up top,
-     declarative diagram in the middle, options + answer below.
-  2. safe_mathtex() falls back MathTex → Tex → Text so a bad equation never
-     aborts the batch.
-  3. sanitize_latex() replaces raw unicode (°, ×, →, π, θ …) with their LaTeX
-     equivalents before MathTex sees them.
-  4. safe_eval_math() now treats '^' as power and inserts implicit '*' where
-     physics writers expect it (2x, 3(x+1), 4sin(x)).
-  5. Declarative parser adds: text, polygon, ellipse, angle_arc, dot radius,
-     per-element opacity / scale / rotate / shift / z_index, and appearance
-     animation styles (fade / write / create / grow / none).
-  6. Layout zones are declared per preset instead of hardcoded DOWN * 5.4.
-  7. Graceful failures in SAFE_MODE so a single bad CSV row never kills the
-     whole GitHub Actions run.
 """
 
 from __future__ import annotations
 
+import json
 import math
 import os
 import re
@@ -125,7 +109,7 @@ _UNICODE_TO_LATEX = {
 def clean_str(text: str | None) -> str:
     if not text:
         return ""
-    return str(text).strip('"\'').strip()
+    return str(text).strip().strip('"\'').strip()
 
 
 def sanitize_latex(s: str) -> str:
@@ -155,7 +139,7 @@ def safe_mathtex(s: str, font_size: int = 24, color=WHITE) -> Mobject:
         except Exception:
             continue
 
-    # Last resort: render as plain text (strips LaTeX commands crudely)
+    # Last resort: render as plain text (strips LaTeX commands)
     fallback = re.sub(r"\\[a-zA-Z]+", "", s_clean).replace("{", "").replace("}", "")
     return Text(fallback, font_size=font_size, color=color)
 
@@ -174,16 +158,15 @@ def safe_eval_math(expr_str: str, x_val: float) -> float:
     Evaluate a function of x for graph plotting with common physics-friendly
     syntax:
         ^ becomes **
-        2x, 3(x+1), 4sin(x) get implicit * inserted
+        2x, x(x+1), (x+1)(x-1), 4sin(x) get implicit * inserted
     """
     if not expr_str:
         return 0.0
 
-    expr = expr_str.replace("^", "**")
-    # Implicit multiplication: digit followed by letter or '('
-    expr = re.sub(r"(\d)\s*(x\b|[a-zA-Z(])", r"\1*\2", expr)
-    # 2sin(x) style: number directly attached to known functions
-    expr = re.sub(r"(\d)\s*(sin|cos|tan|exp|sqrt|abs|log)\b", r"\1*\2", expr)
+    expr = str(expr_str).replace("^", "**")
+    # Insert implicit multiplication for numbers, x, or closing brackets followed by variable/bracket/function
+    expr = re.sub(r"(\d|\bx\b|\))\s*([a-zA-Z\(])", r"\1*\2", expr)
+    expr = re.sub(r"\*{3,}", "**", expr)  # Guard against unintended ***
 
     allowed = {
         "sin": np.sin, "cos": np.cos, "tan": np.tan,
@@ -197,10 +180,13 @@ def safe_eval_math(expr_str: str, x_val: float) -> float:
 
 
 def parse_json_list(raw: str | None) -> list[Any]:
+    """Parses JSON lists, including double-escaped CSV strings."""
     if not raw:
         return []
     try:
-        parsed = json.loads(raw)
+        parsed = json.loads(str(raw).strip())
+        if isinstance(parsed, str):
+            parsed = json.loads(parsed)
         if isinstance(parsed, list):
             return parsed
     except Exception:
@@ -233,7 +219,7 @@ class UniversalPhysicsScene(Scene):
         is_pyq     = concept_type in ("PYQ", "MCQ", "QUESTION")
 
         try:
-            # Priority 1 — combined PYQ + custom visual (the important new path)
+            # Priority 1 — combined PYQ + custom visual
             if is_pyq and has_visual:
                 self.build_pyq_with_visual_scene(visual_json, audio_duration)
 
@@ -262,7 +248,6 @@ class UniversalPhysicsScene(Scene):
                 self.build_generic_vector_scene(audio_duration)
         except Exception as exc:
             if SAFE_MODE:
-                # Show a calm error card rather than crash the whole batch
                 err = Text(
                     f"[render error]\n{type(exc).__name__}: {exc}",
                     font_size=18, color=COLOR_POS,
@@ -285,11 +270,16 @@ class UniversalPhysicsScene(Scene):
         return [str(x) for x in parse_json_list(raw) if x]
 
     def build_header(self, title_text: str, tagline_text: str):
-        kwargs_title = dict(font_size=28, weight=BOLD, color=COLOR_ACCENT)
-        kwargs_sub   = dict(font_size=18, slant=ITALIC, color=GRAY_B)
+        kwargs_title = dict(font_size=28, color=COLOR_ACCENT)
+        kwargs_sub   = dict(font_size=18, color=GRAY_B)
+        
         if HINDI_FONT:
             kwargs_title["font"] = HINDI_FONT
             kwargs_sub["font"]   = HINDI_FONT
+        else:
+            kwargs_title["weight"] = BOLD
+            kwargs_sub["slant"]   = ITALIC
+
         title = Text(title_text, **kwargs_title)
         sub   = Text(tagline_text, **kwargs_sub)
         header = VGroup(title, sub).arrange(DOWN, buff=0.10).move_to([0, ZONE_HEADER, 0])
@@ -302,6 +292,9 @@ class UniversalPhysicsScene(Scene):
         if not equations:
             return VGroup()
         eq_group = VGroup(*[safe_mathtex(eq, font_size=26, color=WHITE) for eq in equations if eq])
+        if len(eq_group) == 0:
+            return VGroup()
+
         eq_group.arrange(DOWN, buff=0.22)
         if eq_group.width > self.MAX_WIDTH - 0.4:
             eq_group.scale_to_fit_width(self.MAX_WIDTH - 0.4)
@@ -316,18 +309,8 @@ class UniversalPhysicsScene(Scene):
         eq_group.move_to(card_bg.get_center())
         return VGroup(card_bg, eq_group)
 
-    # ------------------------------------------------ PYQ + visual (NEW)
+    # ------------------------------------------------ PYQ + visual
     def build_pyq_with_visual_scene(self, visual_json_str: str, audio_duration: float):
-        """
-        Combined layout for JEE PYQ rows that also carry a declarative diagram.
-
-            +7.2  header
-            +5.6  question text
-            +3.0…–1.0  declarative visual
-            –2.6  2×2 MCQ option grid
-            –5.0  equations card
-            –7.0  correct-answer box
-        """
         question_str = clean_str(os.environ.get("QUESTION_TEXT", "Sample Question"))
         opt_a = clean_str(os.environ.get("OPTION_A", "(A) Option 1"))
         opt_b = clean_str(os.environ.get("OPTION_B", "(B) Option 2"))
@@ -345,14 +328,22 @@ class UniversalPhysicsScene(Scene):
             question.scale_to_fit_width(self.MAX_WIDTH)
         question.move_to([0, ZONE_QUESTION + 0.6, 0])
 
-        # --- 2×2 options grid ---
-        opt_strs = [opt_a, opt_b, opt_c, opt_d]
-        opt_mobs = [safe_mathtex(format_latex_option(o), font_size=20) for o in opt_strs if o]
-        row1 = VGroup(*opt_mobs[:2]).arrange(RIGHT, buff=0.6)
-        row2 = VGroup(*opt_mobs[2:]).arrange(RIGHT, buff=0.6)
-        options_grid = VGroup(row1, row2).arrange(DOWN, buff=0.25).move_to([0, ZONE_OPTIONS, 0])
+        # --- options grid ---
+        opts = [opt_a, opt_b, opt_c, opt_d]
+        max_opt_len = max((len(o) for o in opts if o), default=0)
+        if max_opt_len <= 16 and all(opts):
+            row1 = VGroup(safe_mathtex(format_latex_option(opt_a), 20),
+                          safe_mathtex(format_latex_option(opt_b), 20)).arrange(RIGHT, buff=0.6)
+            row2 = VGroup(safe_mathtex(format_latex_option(opt_c), 20),
+                          safe_mathtex(format_latex_option(opt_d), 20)).arrange(RIGHT, buff=0.6)
+            options_grid = VGroup(row1, row2).arrange(DOWN, buff=0.25)
+        else:
+            options_grid = VGroup(*[safe_mathtex(format_latex_option(o), 20)
+                                    for o in opts if o]).arrange(DOWN, buff=0.18, aligned_edge=LEFT)
+        
         if options_grid.width > self.MAX_WIDTH:
             options_grid.scale_to_fit_width(self.MAX_WIDTH)
+        options_grid.move_to([0, ZONE_OPTIONS, 0])
 
         # --- answer box ---
         ans_text = safe_mathtex(format_latex_option(correct_ans),
@@ -371,7 +362,7 @@ class UniversalPhysicsScene(Scene):
         # --- equations card ---
         eq_card = self.draw_math_card(self.equations, y_center=ZONE_EQUATIONS)
 
-        # --- declarative visual (constrained to its zone) ---
+        # --- declarative visual ---
         visual_group = self._build_visual_group(visual_json_str)
         visual_group.move_to([0, ZONE_VISUAL, 0])
         if visual_group.height > 4.0:
@@ -466,10 +457,6 @@ class UniversalPhysicsScene(Scene):
 
     # ------------------------------------------------ primitive builder
     def _build_visual_group(self, visual_json_str: str) -> VGroup:
-        """
-        Parse the declarative JSON payload and return a VGroup of all elements.
-        Also populates self._pending_animations for the caller to play.
-        """
         elements = parse_json_list(visual_json_str)
         self._pending_animations = []
         group = VGroup()
@@ -482,7 +469,7 @@ class UniversalPhysicsScene(Scene):
                 continue
             group.add(mob)
 
-            # Register rotate animation for later
+            # Register rotate animation
             anim = item.get("animate")
             if anim == "rotate" and item.get("pivot") is not None:
                 pivot = np.array(item["pivot"], dtype=float)
@@ -495,7 +482,6 @@ class UniversalPhysicsScene(Scene):
         e_type = str(item.get("type", "")).lower()
         color = item.get("color", COLOR_ACCENT)
         lbl_text = item.get("label", "")
-        label_pos = item.get("label_pos", "auto")
 
         mob: Mobject | None = None
 
@@ -504,21 +490,22 @@ class UniversalPhysicsScene(Scene):
             direction = str(item.get("direction", "RIGHT")).upper()
             rows = int(item.get("rows", 7))
             field = VGroup()
-            for y in np.linspace(1.8, -3.2, rows):
-                if direction == "LEFT":
-                    arr = Arrow(RIGHT * 4.0 + UP * y, LEFT * 4.0 + UP * y,
-                                buff=0, stroke_width=2.5, color=color)
-                elif direction == "UP":
-                    arr = Arrow(RIGHT * y + DOWN * 3.0, RIGHT * y + UP * 2.0,
-                                buff=0, stroke_width=2.5, color=color)
-                elif direction == "DOWN":
-                    arr = Arrow(RIGHT * y + UP * 2.0, RIGHT * y + DOWN * 3.0,
-                                buff=0, stroke_width=2.5, color=color)
-                else:
-                    arr = Arrow(LEFT * 4.0 + UP * y, RIGHT * 4.0 + UP * y,
-                                buff=0, stroke_width=2.5, color=color)
-                arr.set_opacity(float(item.get("opacity", 0.35)))
-                field.add(arr)
+            
+            if direction in ("UP", "DOWN"):
+                x_pts = np.linspace(-3.5, 3.5, rows)
+                for x in x_pts:
+                    arr = Arrow(RIGHT * x + DOWN * 2.0, RIGHT * x + UP * 2.0, buff=0, stroke_width=2.5, color=color) if direction == "UP" \
+                          else Arrow(RIGHT * x + UP * 2.0, RIGHT * x + DOWN * 2.0, buff=0, stroke_width=2.5, color=color)
+                    arr.set_opacity(float(item.get("opacity", 0.35)))
+                    field.add(arr)
+            else:
+                y_pts = np.linspace(1.8, -3.2, rows)
+                for y in y_pts:
+                    arr = Arrow(LEFT * 4.0 + UP * y, RIGHT * 4.0 + UP * y, buff=0, stroke_width=2.5, color=color) if direction == "RIGHT" \
+                          else Arrow(RIGHT * 4.0 + UP * y, LEFT * 4.0 + UP * y, buff=0, stroke_width=2.5, color=color)
+                    arr.set_opacity(float(item.get("opacity", 0.35)))
+                    field.add(arr)
+
             if lbl_text:
                 field.add(safe_mathtex(lbl_text, 32, color=color).next_to(field[0], RIGHT, buff=0.2))
             mob = field
@@ -603,8 +590,11 @@ class UniversalPhysicsScene(Scene):
         # ------------------------------- PLAIN TEXT
         elif e_type == "text":
             txt = str(item.get("text", lbl_text))
-            mob = Text(txt, font_size=int(item.get("font_size", 22)),
-                       color=color).move_to(np.array(item.get("pos", [0, 0, 0]), dtype=float))
+            pos = np.array(item.get("pos", [0, 0, 0]), dtype=float)
+            if item.get("use_latex", False) or "$" in txt or "\\" in txt:
+                mob = safe_mathtex(txt, font_size=int(item.get("font_size", 22)), color=color).move_to(pos)
+            else:
+                mob = Text(txt, font_size=int(item.get("font_size", 22)), color=color).move_to(pos)
 
         # ------------------------------- GROUP (recursive)
         elif e_type == "group":
@@ -619,7 +609,7 @@ class UniversalPhysicsScene(Scene):
             return None
 
         # Per-element transforms
-        if "opacity" in item and not isinstance(mob, VGroup):
+        if "opacity" in item:
             mob.set_opacity(float(item["opacity"]))
         if "scale" in item:
             mob.scale(float(item["scale"]))
@@ -632,7 +622,7 @@ class UniversalPhysicsScene(Scene):
 
         return mob
 
-    # ------------------------------------------------ presets (kept + minor fixes)
+    # ------------------------------------------------ presets
     def build_dipole_torque_scene(self, audio_duration: float):
         equations = self.equations or [
             r"\vec{F}_{\text{net}} = \vec{0}",
