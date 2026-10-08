@@ -1,0 +1,13 @@
+numpy<2.0.0
+setuptools<70.0.0
+manim
+scipy
+torch==2.2.2
+torchaudio==2.2.2
+soundfile
+TTS==0.22.0
+transformers==4.38.2
+huggingface_hub
+google-api-python-client
+google-auth-httplib2
+google-auth-oauthlib
