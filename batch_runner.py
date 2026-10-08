@@ -1,5 +1,6 @@
 import os
 import csv
+import re
 import subprocess
 import glob
 import shutil
@@ -7,15 +8,20 @@ import traceback
 from generate_audio import synthesize_audio_for_row
 
 OUTPUT_DIR = "output_shorts"
-MANIM_QUALITY = "-qh"  # High quality 1080x1920 60fps rendering ('-ql' for fast low-res drafts)
+MANIM_QUALITY = "-qh"  # '-qh' for 1080x1920 60fps, '-ql' for fast low-res draft
 CSV_FILE = "content_batch.csv"
 VOICE_SAMPLE = "saem_voice_sample.wav"
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 
+def sanitize_filename(name: str) -> str:
+    """Sanitizes strings into safe OS filenames by replacing spaces and special characters."""
+    return re.sub(r'[^\w\-]', '_', name.strip())
+
+
 def process_batch():
-    # 1. Pre-flight Checks
+    # 1. Pre-flight System Checks
     if not os.path.exists(CSV_FILE):
         raise FileNotFoundError(f"Batch configuration '{CSV_FILE}' not found.")
     
@@ -25,20 +31,32 @@ def process_batch():
     with open(CSV_FILE, mode='r', encoding='utf-8') as file:
         reader = list(csv.DictReader(file))
         total = len(reader)
+        
+        if total == 0:
+            print(f" Warning: Batch configuration '{CSV_FILE}' is empty.")
+            return
+
         print(f"\n==========================================")
         print(f" Starting Production Engine for {total} Videos ")
         print(f"==========================================\n")
 
         for idx, row in enumerate(reader, 1):
-            vid_id = row.get('video_id', f'short_{idx}').strip()
-            concept_type = row.get('concept_type', 'GENERIC').strip().upper()
+            # Safe row parsing
+            raw_vid_id = (row.get('video_id') or f'short_{idx}').strip()
+            vid_id = sanitize_filename(raw_vid_id)
+            concept_type = (row.get('concept_type') or 'GENERIC').strip().upper()
+            
             print(f"[{idx}/{total}] Building Video '{vid_id}' (Type: {concept_type})")
 
             voice_path, pad_path = None, None
 
             try:
                 # 2. Synthesize Voiceover & Audio Pad
-                voice_path, pad_path, audio_duration = synthesize_audio_for_row(row, speaker_wav=VOICE_SAMPLE, output_dir="temp_audio")
+                voice_path, pad_path, audio_duration = synthesize_audio_for_row(
+                    row, 
+                    speaker_wav=VOICE_SAMPLE, 
+                    output_dir="temp_audio"
+                )
 
                 # 3. Populate Environment Payload for Universal Scene Engine
                 env = os.environ.copy()
@@ -48,7 +66,7 @@ def process_batch():
                 env["AUDIO_DURATION"] = str(audio_duration)
                 env["VIDEO_ID"] = str(vid_id)
 
-                # 4. Clean Stale Intermediate Frames
+                # 4. Clean Stale Intermediate Frames from Previous Item
                 if os.path.exists("media"):
                     shutil.rmtree("media", ignore_errors=True)
 
@@ -70,7 +88,7 @@ def process_batch():
                 final_output = os.path.join(OUTPUT_DIR, f"{vid_id}_final.mp4")
                 print(f"[FFmpeg] Stitching media into {final_output}...")
 
-                # Combine voice + background pad, add trailing pad to audio, freeze final video frame 2s
+                # Combine voice + pad, extend audio buffer, and hold final video frame 2s
                 filter_complex = (
                     "[1:a][2:a]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[amixout];"
                     "[amixout]apad=pad_len=96000[aout];"
@@ -110,11 +128,14 @@ def process_batch():
                 # Cleanup temporary WAV files per iteration
                 for path in [voice_path, pad_path]:
                     if path and os.path.exists(path):
-                        os.remove(path)
+                        try:
+                            os.remove(path)
+                        except OSError:
+                            pass
 
-    # Clean empty audio directory on completion
-    if os.path.exists("temp_audio") and not os.listdir("temp_audio"):
-        os.rmdir("temp_audio")
+    # Final cleanup of temp audio directory
+    if os.path.exists("temp_audio"):
+        shutil.rmtree("temp_audio", ignore_errors=True)
 
 
 if __name__ == "__main__":
