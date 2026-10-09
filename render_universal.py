@@ -1,20 +1,5 @@
 """
 render_universal.py — Master 3b1b Manim rendering engine (v2.1).
-
-Reads row parameters from environment variables injected by batch_runner.py:
-
-    CONCEPT_TYPE      DIPOLE_TORQUE | PROJECTILE | LORENTZ | WAVE |
-                      OPTICS | CIRCUIT | PYQ | GENERIC
-    HEADER_TITLE      Top gold title
-    TAGLINE           Italic subtitle
-    QUESTION_TEXT     PYQ question
-    OPTION_A..D       PYQ options
-    CORRECT_ANSWER    PYQ answer highlight
-    EQUATIONS_JSON    JSON array of LaTeX strings
-    VISUAL_DATA_JSON  JSON array of declarative diagram elements
-    AUDIO_DURATION    Total scene duration in seconds
-    SAFE_MODE         "1" (default) prevents a bad row from crashing the batch
-    HINDI_FONT        Optional font path for Devanagari headers
 """
 
 from __future__ import annotations
@@ -29,16 +14,11 @@ from typing import Any
 import numpy as np
 from manim import *
 
-# -----------------------------------------------------------------------------
-# 9:16 VERTICAL ASPECT RATIO (1080 × 1920)
-# Frame: width = 9.0 units, height = 16.0 units
-# -----------------------------------------------------------------------------
 config.pixel_width = 1080
 config.pixel_height = 1920
 config.frame_width = 9.0
 config.frame_height = 16.0
 
-# 3Blue1Brown high-contrast palette
 COLOR_BG       = "#0B0C10"
 COLOR_FIELD    = "#3498DB"
 COLOR_POS      = "#FF4B4B"
@@ -48,7 +28,6 @@ COLOR_FORCE    = "#2ECC71"
 COLOR_CARD_BG  = "#15161D"
 COLOR_BORDER   = "#333333"
 
-# Vertical zones (y centres) for the 16-unit tall frame
 ZONE_HEADER    = +7.20
 ZONE_QUESTION  = +4.30
 ZONE_VISUAL    = +0.50
@@ -56,56 +35,20 @@ ZONE_OPTIONS   = -2.60
 ZONE_EQUATIONS = -5.00
 ZONE_ANSWER    = -7.00
 
-# Environment / debug
 SAFE_MODE = os.environ.get("SAFE_MODE", "1") not in ("0", "false", "False")
 HINDI_FONT = os.environ.get("HINDI_FONT", "")
 
-# -----------------------------------------------------------------------------
-# Unicode → LaTeX fallback map (raw unicode crashes MathTex under texlive)
-# -----------------------------------------------------------------------------
 _UNICODE_TO_LATEX = {
-    "°": r"^\circ ",
-    "×": r"\times ",
-    "÷": r"\div ",
-    "→": r"\to ",
-    "←": r"\leftarrow ",
-    "∞": r"\infty ",
-    "π": r"\pi ",
-    "θ": r"\theta ",
-    "α": r"\alpha ",
-    "β": r"\beta ",
-    "γ": r"\gamma ",
-    "δ": r"\delta ",
-    "Δ": r"\Delta ",
-    "Σ": r"\Sigma ",
-    "Ω": r"\Omega ",
-    "λ": r"\lambda ",
-    "μ": r"\mu ",
-    "ν": r"\nu ",
-    "ρ": r"\rho ",
-    "σ": r"\sigma ",
-    "τ": r"\tau ",
-    "φ": r"\phi ",
-    "ψ": r"\psi ",
-    "ω": r"\omega ",
-    "Φ": r"\Phi ",
-    "Ψ": r"\Psi ",
-    "ℏ": r"\hbar ",
-    "≤": r"\le ",
-    "≥": r"\ge ",
-    "≠": r"\ne ",
-    "≈": r"\approx ",
-    "±": r"\pm ",
-    "∈": r"\in ",
-    "∑": r"\sum ",
-    "∏": r"\prod ",
-    "∫": r"\int ",
+    "°": r"^\circ ", "×": r"\times ", "÷": r"\div ", "→": r"\to ", "←": r"\leftarrow ",
+    "∞": r"\infty ", "π": r"\pi ", "θ": r"\theta ", "α": r"\alpha ", "β": r"\beta ",
+    "γ": r"\gamma ", "δ": r"\delta ", "Δ": r"\Delta ", "Σ": r"\Sigma ", "Ω": r"\Omega ",
+    "λ": r"\lambda ", "μ": r"\mu ", "ν": r"\nu ", "ρ": r"\rho ", "σ": r"\sigma ",
+    "τ": r"\tau ", "φ": r"\phi ", "ψ": r"\psi ", "ω": r"\omega ", "Φ": r"\Phi ",
+    "Ψ": r"\Psi ", "ℏ": r"\hbar ", "≤": r"\le ", "≥": r"\ge ", "≠": r"\ne ",
+    "≈": r"\approx ", "±": r"\pm ", "∈": r"\in ", "∑": r"\sum ", "∏": r"\prod ", "∫": r"\int ",
 }
 
 
-# -----------------------------------------------------------------------------
-# Small helpers
-# -----------------------------------------------------------------------------
 def clean_str(text: str | None) -> str:
     if not text:
         return ""
@@ -113,7 +56,6 @@ def clean_str(text: str | None) -> str:
 
 
 def sanitize_latex(s: str) -> str:
-    """Replace raw unicode with LaTeX-safe commands MathTex can consume."""
     if not s:
         return ""
     for uni, tex in _UNICODE_TO_LATEX.items():
@@ -123,10 +65,6 @@ def sanitize_latex(s: str) -> str:
 
 
 def safe_mathtex(s: str, font_size: int = 24, color=WHITE) -> Mobject:
-    """
-    Build a MathTex, falling back to Tex, then to plain Text, so a single
-    malformed LaTeX string never kills the render.
-    """
     if s is None:
         s = ""
     s_clean = sanitize_latex(str(s).strip())
@@ -139,7 +77,6 @@ def safe_mathtex(s: str, font_size: int = 24, color=WHITE) -> Mobject:
         except Exception:
             continue
 
-    # Last resort: render as plain text (strips LaTeX commands)
     fallback = re.sub(r"\\[a-zA-Z]+", "", s_clean).replace("{", "").replace("}", "")
     return Text(fallback, font_size=font_size, color=color)
 
@@ -154,19 +91,12 @@ def format_latex_option(opt_text: str) -> str:
 
 
 def safe_eval_math(expr_str: str, x_val: float) -> float:
-    """
-    Evaluate a function of x for graph plotting with common physics-friendly
-    syntax:
-        ^ becomes **
-        2x, x(x+1), (x+1)(x-1), 4sin(x) get implicit * inserted
-    """
     if not expr_str:
         return 0.0
 
     expr = str(expr_str).replace("^", "**")
-    # Insert implicit multiplication for numbers, x, or closing brackets followed by variable/bracket/function
     expr = re.sub(r"(\d|\bx\b|\))\s*([a-zA-Z\(])", r"\1*\2", expr)
-    expr = re.sub(r"\*{3,}", "**", expr)  # Guard against unintended ***
+    expr = re.sub(r"\*{3,}", "**", expr)
 
     allowed = {
         "sin": np.sin, "cos": np.cos, "tan": np.tan,
@@ -180,7 +110,6 @@ def safe_eval_math(expr_str: str, x_val: float) -> float:
 
 
 def parse_json_list(raw: str | None) -> list[Any]:
-    """Parses JSON lists, including double-escaped CSV strings."""
     if not raw:
         return []
     try:
@@ -194,16 +123,11 @@ def parse_json_list(raw: str | None) -> list[Any]:
     return []
 
 
-# -----------------------------------------------------------------------------
-# Scene
-# -----------------------------------------------------------------------------
 class UniversalPhysicsScene(Scene):
-    # ------------------------------------------------ main entry point
     def construct(self):
         self.camera.background_color = COLOR_BG
         self.MAX_WIDTH = 7.8
 
-        # Read env
         concept_type   = os.environ.get("CONCEPT_TYPE", "GENERIC").upper().strip()
         header_title   = clean_str(os.environ.get("HEADER_TITLE", "Physics Concept"))
         tagline        = clean_str(os.environ.get("TAGLINE", "3b1b Visual Intuition"))
@@ -212,26 +136,18 @@ class UniversalPhysicsScene(Scene):
         visual_json = os.environ.get("VISUAL_DATA_JSON", "")
         self.equations = self._read_equations()
 
-        # Header (persistent across the scene)
         self.build_header(header_title, tagline)
 
         has_visual = bool(parse_json_list(visual_json))
         is_pyq     = concept_type in ("PYQ", "MCQ", "QUESTION")
 
         try:
-            # Priority 1 — combined PYQ + custom visual
             if is_pyq and has_visual:
                 self.build_pyq_with_visual_scene(visual_json, audio_duration)
-
-            # Priority 2 — PYQ with no custom visual
             elif is_pyq:
                 self.build_pyq_scene(audio_duration)
-
-            # Priority 3 — pure declarative visual
             elif has_visual:
                 self.build_dynamic_json_scene(visual_json, audio_duration)
-
-            # Priority 4 — archetype presets
             elif concept_type in ("DIPOLE_TORQUE", "DIPOLE", "ELECTROSTATICS_DIPOLE"):
                 self.build_dipole_torque_scene(audio_duration)
             elif concept_type in ("PROJECTILE_MOTION", "PROJECTILE", "KINEMATICS"):
@@ -259,7 +175,6 @@ class UniversalPhysicsScene(Scene):
 
         self._wait_remaining(audio_duration)
 
-    # ------------------------------------------------ helpers
     def _wait_remaining(self, audio_duration: float):
         rem = audio_duration - self.renderer.time
         if rem > 0:
@@ -309,7 +224,6 @@ class UniversalPhysicsScene(Scene):
         eq_group.move_to(card_bg.get_center())
         return VGroup(card_bg, eq_group)
 
-    # ------------------------------------------------ PYQ + visual
     def build_pyq_with_visual_scene(self, visual_json_str: str, audio_duration: float):
         question_str = clean_str(os.environ.get("QUESTION_TEXT", "Sample Question"))
         opt_a = clean_str(os.environ.get("OPTION_A", "(A) Option 1"))
@@ -318,7 +232,6 @@ class UniversalPhysicsScene(Scene):
         opt_d = clean_str(os.environ.get("OPTION_D", "(D) Option 4"))
         correct_ans = clean_str(os.environ.get("CORRECT_ANSWER", "Correct Answer: (A)"))
 
-        # --- question paragraph ---
         wrapped = []
         for line in question_str.split("\n"):
             wrapped.extend(textwrap.wrap(line, width=44) if len(line) > 44 else [line])
@@ -328,7 +241,6 @@ class UniversalPhysicsScene(Scene):
             question.scale_to_fit_width(self.MAX_WIDTH)
         question.move_to([0, ZONE_QUESTION + 0.6, 0])
 
-        # --- options grid ---
         opts = [opt_a, opt_b, opt_c, opt_d]
         max_opt_len = max((len(o) for o in opts if o), default=0)
         if max_opt_len <= 16 and all(opts):
@@ -345,9 +257,7 @@ class UniversalPhysicsScene(Scene):
             options_grid.scale_to_fit_width(self.MAX_WIDTH)
         options_grid.move_to([0, ZONE_OPTIONS, 0])
 
-        # --- answer box ---
-        ans_text = safe_mathtex(format_latex_option(correct_ans),
-                                font_size=24, color=COLOR_FORCE)
+        ans_text = safe_mathtex(format_latex_option(correct_ans), font_size=24, color=COLOR_FORCE)
         ans_box = VGroup(
             RoundedRectangle(
                 corner_radius=0.15,
@@ -359,10 +269,8 @@ class UniversalPhysicsScene(Scene):
             ans_text,
         ).move_to([0, ZONE_ANSWER, 0])
 
-        # --- equations card ---
         eq_card = self.draw_math_card(self.equations, y_center=ZONE_EQUATIONS)
 
-        # --- declarative visual ---
         visual_group = self._build_visual_group(visual_json_str)
         visual_group.move_to([0, ZONE_VISUAL, 0])
         if visual_group.height > 4.0:
@@ -370,7 +278,6 @@ class UniversalPhysicsScene(Scene):
         if visual_group.width > self.MAX_WIDTH:
             visual_group.scale_to_fit_width(self.MAX_WIDTH)
 
-        # --- choreography ---
         step = max(1.0, (audio_duration - 5.0) / 4.0)
         self.play(FadeIn(question, shift=UP * 0.2), run_time=0.8)
         self.play(FadeIn(visual_group), run_time=1.2)
@@ -383,7 +290,6 @@ class UniversalPhysicsScene(Scene):
         self.play(FadeIn(ans_box, shift=UP * 0.2),
                   Circumscribe(ans_box, color=COLOR_ACCENT, buff=0.1, run_time=1.0))
 
-    # ------------------------------------------------ PYQ only
     def build_pyq_scene(self, audio_duration: float):
         question_str = clean_str(os.environ.get("QUESTION_TEXT", "Sample Question"))
         opt_a = clean_str(os.environ.get("OPTION_A", "(A) Option 1"))
@@ -439,7 +345,6 @@ class UniversalPhysicsScene(Scene):
         self.play(FadeIn(ans_box, shift=UP * 0.2),
                   Circumscribe(ans_box, color=COLOR_ACCENT, buff=0.1, run_time=1.0))
 
-    # ------------------------------------------------ declarative JSON scene
     def build_dynamic_json_scene(self, visual_json_str: str, audio_duration: float):
         group = self._build_visual_group(visual_json_str)
         group.move_to([0, ZONE_VISUAL - 0.5, 0])
@@ -455,7 +360,6 @@ class UniversalPhysicsScene(Scene):
             self.play(anim, run_time=1.5, rate_func=smooth)
         self._pending_animations = []
 
-    # ------------------------------------------------ primitive builder
     def _build_visual_group(self, visual_json_str: str) -> VGroup:
         elements = parse_json_list(visual_json_str)
         self._pending_animations = []
@@ -469,7 +373,6 @@ class UniversalPhysicsScene(Scene):
                 continue
             group.add(mob)
 
-            # Register rotate animation
             anim = item.get("animate")
             if anim == "rotate" and item.get("pivot") is not None:
                 pivot = np.array(item["pivot"], dtype=float)
@@ -485,7 +388,6 @@ class UniversalPhysicsScene(Scene):
 
         mob: Mobject | None = None
 
-        # ------------------------------- FIELD
         if e_type in ("field", "vector_field"):
             direction = str(item.get("direction", "RIGHT")).upper()
             rows = int(item.get("rows", 7))
@@ -510,14 +412,12 @@ class UniversalPhysicsScene(Scene):
                 field.add(safe_mathtex(lbl_text, 32, color=color).next_to(field[0], RIGHT, buff=0.2))
             mob = field
 
-        # ------------------------------- CHARGE / DOT / PARTICLE
         elif e_type in ("charge", "particle", "dot"):
             pos = np.array(item.get("pos", [0, 0, 0]), dtype=float)
             radius = float(item.get("radius", 0.22))
             dot = Dot(pos, radius=radius, color=color)
             mob = VGroup(dot, safe_mathtex(lbl_text, 20, WHITE).move_to(pos)) if lbl_text else dot
 
-        # ------------------------------- VECTOR / ARROW / FORCE
         elif e_type in ("vector", "arrow", "force"):
             start = np.array(item.get("start", [0, 0, 0]), dtype=float)
             end   = np.array(item.get("end",   [1, 1, 0]), dtype=float)
@@ -528,7 +428,6 @@ class UniversalPhysicsScene(Scene):
             else:
                 mob = vec
 
-        # ------------------------------- LINE / ROD / SEGMENT
         elif e_type in ("line", "rod", "segment"):
             start = np.array(item.get("start", [0, 0, 0]), dtype=float)
             end   = np.array(item.get("end",   [1, 1, 0]), dtype=float)
@@ -539,7 +438,6 @@ class UniversalPhysicsScene(Scene):
                 line = VGroup(line, safe_mathtex(lbl_text, 22, color=color).next_to(line, RIGHT, buff=0.1))
             mob = line
 
-        # ------------------------------- ARC / ANGLE
         elif e_type in ("arc", "angle", "angle_arc"):
             center  = np.array(item.get("center", [0, 0, 0]), dtype=float)
             radius  = float(item.get("radius", 0.8))
@@ -551,7 +449,6 @@ class UniversalPhysicsScene(Scene):
                 arc = VGroup(arc, safe_mathtex(lbl_text, 22, color=color).next_to(arc, RIGHT, buff=0.1))
             mob = arc
 
-        # ------------------------------- GRAPH / FUNCTION
         elif e_type in ("graph", "function", "curve"):
             expr = item.get("expression", "sin(x)")
             x_min, x_max = item.get("x_range", [0, 5])
@@ -563,7 +460,6 @@ class UniversalPhysicsScene(Scene):
             graph = axes.plot(lambda x: safe_eval_math(expr, x), x_range=[x_min, x_max], color=color)
             mob = VGroup(axes, graph)
 
-        # ------------------------------- SHAPES
         elif e_type in ("shape", "lens", "circle", "rectangle", "ellipse", "polygon"):
             kind = str(item.get("kind", e_type if e_type != "shape" else "circle")).lower()
             pos  = np.array(item.get("pos", [0, -1, 0]), dtype=float)
@@ -587,7 +483,6 @@ class UniversalPhysicsScene(Scene):
                 mob = Circle(radius=float(item.get("radius", 1.0)),
                              color=color, stroke_width=3).move_to(pos)
 
-        # ------------------------------- PLAIN TEXT
         elif e_type == "text":
             txt = str(item.get("text", lbl_text))
             pos = np.array(item.get("pos", [0, 0, 0]), dtype=float)
@@ -596,7 +491,6 @@ class UniversalPhysicsScene(Scene):
             else:
                 mob = Text(txt, font_size=int(item.get("font_size", 22)), color=color).move_to(pos)
 
-        # ------------------------------- GROUP (recursive)
         elif e_type == "group":
             sub = VGroup()
             for j, subitem in enumerate(item.get("children", [])):
@@ -608,7 +502,6 @@ class UniversalPhysicsScene(Scene):
         if mob is None:
             return None
 
-        # Per-element transforms
         if "opacity" in item:
             mob.set_opacity(float(item["opacity"]))
         if "scale" in item:
@@ -622,7 +515,6 @@ class UniversalPhysicsScene(Scene):
 
         return mob
 
-    # ------------------------------------------------ presets
     def build_dipole_torque_scene(self, audio_duration: float):
         equations = self.equations or [
             r"\vec{F}_{\text{net}} = \vec{0}",
