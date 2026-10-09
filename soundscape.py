@@ -13,13 +13,20 @@ PEAK_TARGET  = 0.891
 LUFS_TARGET  = -14.0
 
 
+# ============================================================ filters
 def _highpass(sig, sr, cutoff=80.0):
-    sos = butter(2, cutoff / (sr / 2.0), btype="high", output="sos")
+    """High-pass with Nyquist guard."""
+    nyq = sr / 2.0
+    cutoff = max(1.0, min(cutoff, nyq * 0.95))
+    sos = butter(2, cutoff / nyq, btype="high", output="sos")
     return sosfilt(sos, sig).astype(np.float32)
 
 
 def _lowpass(sig, sr, cutoff=12000.0):
-    sos = butter(2, cutoff / (sr / 2.0), btype="low", output="sos")
+    """Low-pass with Nyquist guard — fixes ValueError when sr=24kHz & cutoff=12kHz."""
+    nyq = sr / 2.0
+    cutoff = min(cutoff, nyq * 0.95)
+    sos = butter(2, cutoff / nyq, btype="low", output="sos")
     return sosfilt(sos, sig).astype(np.float32)
 
 
@@ -49,12 +56,13 @@ def _peak_limit(sig, ceiling=PEAK_TARGET):
 
 def _resample(sig, sr_in, sr_out):
     if sr_in == sr_out:
-        return sig
+        return sig.astype(np.float32)
     g = int(np.gcd(sr_in, sr_out))
     up, down = sr_out // g, sr_in // g
     return resample_poly(sig, up, down).astype(np.float32)
 
 
+# ============================================================ pad
 def generate_ambient_pad(duration_sec, sample_rate=CANONICAL_SR):
     n = max(1, int(sample_rate * duration_sec))
     t = np.linspace(0, duration_sec, n, endpoint=False)
@@ -72,6 +80,7 @@ def generate_ambient_pad(duration_sec, sample_rate=CANONICAL_SR):
     return drone
 
 
+# ============================================================ helpers
 def _to_mono_float(data, dtype):
     if dtype == np.int16:
         out = data.astype(np.float32) / 32768.0
@@ -84,27 +93,29 @@ def _to_mono_float(data, dtype):
     return out
 
 
+# ============================================================ main
 def master_voice(input_wav: str, output_wav: str) -> None:
-    """High-pass → compress → low-pass → LUFS → mix pad → peak-limit → 44.1kHz."""
+    """Resample-first, then filter, then mix pad, then peak-limit."""
     sr, raw = wavfile.read(input_wav)
     voice = _to_mono_float(raw, raw.dtype)
     if voice.size == 0:
         raise ValueError(f"'{input_wav}' has no samples")
 
-    voice = _highpass(voice, sr, 80.0)
+    # ★ FIX: resample FIRST so filters always see 44.1 kHz
+    voice = _resample(voice, sr, CANONICAL_SR)
+    sr = CANONICAL_SR
+
+    # Now these are always safe:
+    voice = _highpass(voice, sr, 80.0)          # 80 / 22050 = 0.0036 ✓
     voice = _soft_compress(voice, 0.25, 3.0)
-    voice = _lowpass(voice, sr, 12000.0)
+    voice = _lowpass(voice, sr, 12000.0)        # 12000 / 22050 = 0.544 ✓
     voice = _loudness_normalize(voice, LUFS_TARGET)
 
-    # Resample to canonical 44.1kHz before mixing pad
-    voice = _resample(voice, sr, CANONICAL_SR)
-    sr_out = CANONICAL_SR
-
-    duration = len(voice) / float(sr_out)
-    pad = generate_ambient_pad(duration, sr_out)
+    duration = len(voice) / float(sr)
+    pad = generate_ambient_pad(duration, sr)
     L = min(len(voice), len(pad))
     mixed = voice[:L] + pad[:L]
 
     mixed = _peak_limit(mixed, PEAK_TARGET)
     pcm = np.clip(mixed * 32767.0, -32768, 32767).astype(np.int16)
-    wavfile.write(output_wav, sr_out, pcm)
+    wavfile.write(output_wav, sr, pcm)
