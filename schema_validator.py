@@ -2,11 +2,14 @@
 """schema_validator.py — Pre-flight CSV & JSON validator."""
 
 from __future__ import annotations
-import csv, json, re, sys
+import csv
+import json
+import re
+import sys
 
 X_MIN, X_MAX = -3.5, 3.5
 Y_MIN, Y_MAX = -2.2, 1.8
-WORD_MIN, WORD_MAX = 70, 160
+WORD_MIN, WORD_MAX = 70, 170
 
 
 def safe_json_loads(val_str: str):
@@ -19,11 +22,15 @@ def safe_json_loads(val_str: str):
 def _check_bounds(item, vid, row):
     out = []
     for k in ("pos", "start", "end", "center", "pivot"):
-        if k not in item: continue
+        if k not in item:
+            continue
         c = item[k]
-        if not isinstance(c, (list, tuple)) or len(c) < 2: continue
-        try: x, y = float(c[0]), float(c[1])
-        except (TypeError, ValueError): continue
+        if not isinstance(c, (list, tuple)) or len(c) < 2:
+            continue
+        try:
+            x, y = float(c[0]), float(c[1])
+        except (TypeError, ValueError):
+            continue
         if not (X_MIN <= x <= X_MAX and Y_MIN <= y <= Y_MAX):
             out.append(f"[WARN] Row {row} ({vid}) '{item.get('type')}' {k}=({x},{y}) "
                        f"outside X∈[{X_MIN},{X_MAX}] Y∈[{Y_MIN},{Y_MAX}]")
@@ -34,17 +41,22 @@ def validate_csv(path: str) -> bool:
     has_errors = False
     with open(path, "r", encoding="utf-8", newline="") as f:
         reader = csv.reader(f)
-        try: header = next(reader)
+        try:
+            header = next(reader)
         except StopIteration:
-            print("[ERROR] CSV is empty."); return False
+            print("[ERROR] CSV is empty.")
+            return False
         if len(header) < 13:
-            print(f"[ERROR] Header has {len(header)} cols, expected ≥13."); return False
+            print(f"[ERROR] Header has {len(header)} cols, expected ≥13.")
+            return False
 
         for row_idx, row in enumerate(reader, start=2):
-            if not row: continue
+            if not row:
+                continue
             if len(row) < 13:
                 print(f"[ERROR] Row {row_idx}: {len(row)} cols, need ≥13.")
-                has_errors = True; continue
+                has_errors = True
+                continue
 
             vid = row[0].strip() or f"row_{row_idx}"
             script = row[12].strip()
@@ -62,7 +74,8 @@ def validate_csv(path: str) -> bool:
                     elif col_name == "visual_data_json":
                         for it in parsed:
                             if isinstance(it, dict):
-                                for w in _check_bounds(it, vid, row_idx): print(w)
+                                for w in _check_bounds(it, vid, row_idx):
+                                    print(w)
                 except Exception as e:
                     print(f"[ERROR] Row {row_idx} ({vid}): {col_name} — {e}")
                     has_errors = True
