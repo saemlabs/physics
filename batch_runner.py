@@ -68,7 +68,7 @@ def find_rendered_file(vid_id: str) -> Path | None:
 def stitch_av(raw_video: Path, voice: Path, pad: Path, out: Path):
     filter_complex = (
         "[1:a][2:a]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[amixout];"
-        "[amixout]apad=pad_len=96000[aout];"
+        "[amixout]apad=pad_len=192000[aout];"
         f"[0:v]tpad=stop_mode=clone:stop_duration=2,fps={VIDEO_FPS}[vout]"
     )
     subprocess.run(
@@ -80,7 +80,7 @@ def stitch_av(raw_video: Path, voice: Path, pad: Path, out: Path):
             "-filter_complex", filter_complex,
             "-map", "[vout]", "-map", "[aout]",
             "-c:v", "libx264", "-preset", FFMPEG_PRESET, "-crf", FFMPEG_CRF,
-            "-c:a", "aac", "-b:a", "192k",
+            "-c:a", "aac", "-b:a", "192k", "-ar", "44100",
             "-pix_fmt", "yuv420p",
             "-shortest",
             str(out),
@@ -193,6 +193,7 @@ def _render_one(row: dict, vid_id: str, final_output: Path):
         subprocess.run(
             [
                 "manim", MANIM_QUALITY,
+                "--fps", "30",
                 "--disable_caching",
                 "-o", f"{vid_id}.mp4",
                 "render_universal.py", "UniversalPhysicsScene",
