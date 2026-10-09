@@ -1,13 +1,29 @@
-numpy<2.0.0
+# ---------- Core Animation Engine ----------
+manim==0.18.1
+numpy>=1.24.0,<2.0.0
+scipy>=1.10.0,<1.13.0
+Pillow>=10.0.0
+
+# ---------- Manim Dependencies ----------
+pycairo>=1.24.0
+pydub>=0.25.1
+rich>=13.0.0
+tqdm>=4.66.0
+click>=8.1.0
+pyyaml>=6.0.0
+
+# ---------- Voice Cloning Stack (XTTS-v2) ----------
 setuptools<70.0.0
-manim
-scipy
+Cython>=3.0.0
 torch==2.2.2
 torchaudio==2.2.2
-soundfile
+soundfile>=0.12.1
 TTS==0.22.0
 transformers==4.38.2
-huggingface_hub
-google-api-python-client
-google-auth-httplib2
-google-auth-oauthlib
+huggingface_hub>=0.20.0,<0.23.0
+coqpit>=0.0.16
+trainer>=0.0.30
+
+# ---------- Development & Utilities ----------
+python-dotenv>=1.0.0
+pytest>=8.0.0
