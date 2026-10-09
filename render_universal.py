@@ -1,5 +1,5 @@
 """
-render_universal.py — Master 3b1b Manim rendering engine (v2.3).
+render_universal.py — Master 3b1b Manim 9:16 rendering engine.
 """
 
 from __future__ import annotations
@@ -57,7 +57,6 @@ def clean_str(text: str | None) -> str:
 
 
 def to_3d_point(p: Any) -> np.ndarray:
-    """Normalizes 2D or 3D coordinate inputs into 3D spatial vectors."""
     if p is None:
         return np.zeros(3)
     arr = np.array(p, dtype=float)
