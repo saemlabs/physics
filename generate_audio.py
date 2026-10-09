@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 """
-generate_audio.py — Voice cloning with XTTS-v2 ONLY.
+generate_audio.py — XTTS-v2 voice cloning ONLY (no Edge-TTS fallback).
 
-No Edge-TTS fallback. Your voice sample is the only source of speech.
-If XTTS cannot run, the pipeline fails loudly — you fix the reference
-sample or the environment, not swap in a different voice.
+Reference voice = the only source of speech.
+If XTTS cannot run, we fail loudly. You fix the environment or sample.
 
-Tuned params for Feynman-style narration:
-  temperature=0.70    warm, not sterile
-  speed=0.95          deliberate, lecturer-paced
+Tuned for Feynman-style narration:
+  temperature=0.70        warm, natural
+  speed=0.95              deliberate, lecturer-paced
   repetition_penalty=5.0  prevents loops on long scripts
-  top_k=50, top_p=0.85    natural sampling, avoids monotone
+  top_k=50, top_p=0.85    natural sampling
+  enable_text_splitting   handles 300+ word scripts
 """
 
 from __future__ import annotations
@@ -34,19 +34,18 @@ def get_deterministic_seed(video_id: str) -> int:
     return int(hashlib.sha256(video_id.encode("utf-8")).hexdigest()[:8], 16)
 
 
-def _inspect_reference(path: str) -> tuple[float, int]:
-    """Return (duration_sec, sample_rate). Warn on suboptimal samples."""
-    import soundfile as sf
-    info = sf.info(path)
-    dur = info.frames / float(info.samplerate)
-    _log(f"Reference '{path}': {dur:.2f}s, {info.samplerate} Hz, {info.channels} ch")
-    if dur < 6.0:
-        _log(f"WARN reference is only {dur:.1f}s — XTTS wants 10-30s for a stable clone")
-    if dur > 60.0:
-        _log(f"WARN reference is {dur:.1f}s — trimming to 30s recommended")
-    if info.channels > 1:
-        _log("INFO reference is stereo — XTTS will downmix internally")
-    return dur, info.samplerate
+def _inspect_reference(path: str) -> None:
+    try:
+        import soundfile as sf
+        info = sf.info(path)
+        dur = info.frames / float(info.samplerate)
+        _log(f"Reference '{path}': {dur:.2f}s, {info.samplerate} Hz, {info.channels} ch")
+        if dur < 6.0:
+            _log(f"WARN reference is only {dur:.1f}s (XTTS wants 10–30s)")
+        if dur > 60.0:
+            _log(f"WARN reference is {dur:.1f}s (trim to 30s recommended)")
+    except Exception as e:
+        _log(f"WARN could not inspect reference: {e}")
 
 
 def _get_tts(use_gpu: bool | None = None):
@@ -65,7 +64,6 @@ def _get_tts(use_gpu: bool | None = None):
 
 
 def _reset_tts():
-    """Wipe model and latent cache — used on CUDA OOM to force CPU reload."""
     global _TTS_MODEL, _SPEAKER_LATENT
     _TTS_MODEL = None
     _SPEAKER_LATENT = {}
@@ -83,12 +81,6 @@ def _get_speaker_latent(tts, speaker_wav: str):
 
 
 def synthesize(text: str, speaker_wav: str, output_wav: str, seed: int) -> None:
-    """
-    XTTS-v2 synthesis. Raises on any failure — no silent fallback.
-
-    Writes the raw WAV at the model's native output rate (24 kHz for XTTS-v2).
-    master_voice() will resample to 44.1 kHz downstream.
-    """
     import numpy as np
     import soundfile as sf
     import torch
@@ -133,7 +125,7 @@ def synthesize(text: str, speaker_wav: str, output_wav: str, seed: int) -> None:
         wav = wav.detach().cpu().numpy()
     wav = np.asarray(wav, dtype=np.float32)
 
-    # Discover XTTS's native output rate (usually 24000).
+    # Discover XTTS's native output rate (usually 24000)
     target_sr = 24000
     try:
         model_sr = (
@@ -145,7 +137,7 @@ def synthesize(text: str, speaker_wav: str, output_wav: str, seed: int) -> None:
     except Exception:
         pass
 
-    _log(f"XTTS output rate = {target_sr} Hz, {len(wav)/target_sr:.2f}s of speech")
+    _log(f"XTTS output: {target_sr} Hz, {len(wav) / target_sr:.2f}s of speech")
     sf.write(output_wav, wav, target_sr, subtype="PCM_16")
 
 
@@ -157,11 +149,8 @@ def main() -> int:
     p.add_argument("--output", required=True)
     args = p.parse_args()
 
-    # --- hard requirement: the reference voice must exist ---
     if not os.path.exists(args.speaker_wav):
         _log(f"FATAL reference voice sample not found: '{args.speaker_wav}'")
-        _log("XTTS is the ONLY synthesizer in this pipeline — no Edge-TTS fallback.")
-        _log("Place your sample at the repo root and re-run.")
         return 1
 
     seed = get_deterministic_seed(args.video_id)
@@ -169,7 +158,7 @@ def main() -> int:
 
     try:
         _inspect_reference(args.speaker_wav)
-        _log(f"Synthesizing '{args.video_id}' (seed={seed})")
+        _log(f"Synthesizing '{args.video_id}' (seed={seed}, {len(args.script.split())} words)")
         synthesize(args.script, args.speaker_wav, raw_wav, seed)
     except Exception as e:
         _log(f"FATAL XTTS synthesis failed: {type(e).__name__}: {e}")
