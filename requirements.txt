@@ -1,10 +1,10 @@
-# ---------- Core Animation Engine ----------
+# ---------- Core Rendering ----------
 manim==0.18.1
 numpy==1.26.4
 scipy==1.11.4
 Pillow==10.2.0
 
-# ---------- Manim Dependencies ----------
+# ---------- Manim Runtime ----------
 pycairo==1.26.0
 pydub==0.25.1
 rich==13.7.1
@@ -12,7 +12,7 @@ tqdm==4.66.2
 click==8.1.7
 pyyaml==6.0.1
 
-# ---------- Voice Cloning Stack (XTTS-v2) ----------
+# ---------- Voice Synthesis (XTTS-v2 + Edge-TTS fallback) ----------
 setuptools==69.5.1
 Cython==3.0.10
 torch==2.2.2
@@ -23,6 +23,4 @@ transformers==4.38.2
 huggingface_hub==0.22.2
 coqpit==0.0.16
 trainer==0.0.36
-
-# ---------- Utilities ----------
-python-dotenv==1.0.1
+edge-tts==6.1.12
