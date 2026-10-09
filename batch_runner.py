@@ -130,23 +130,27 @@ def run_pipeline_for_row(row: dict,
         if not os.path.exists(temp_video):
             raise FileNotFoundError(f"Manim produced no file: {temp_video}")
 
-        # ---- Step 4: FFmpeg stitch ----
-        ffmpeg_cmd = [
-            "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-            "-i", temp_video,
-            "-i", temp_audio,
-            "-filter_complex",
-            "[1:a]alimiter=limit=0.95,apad=pad_len=96000[aout]",
-            "-map", "0:v", "-map", "[aout]",
-            "-c:v", "libx264",
-            "-preset", "veryfast",
-            "-crf", "20",
-            "-pix_fmt", "yuv420p",
-            "-c:a", "aac", "-b:a", "192k", "-ar", "44100",
-            "-movflags", "+faststart",
-            "-shortest",
-            final_output,
+        # ---- Step 4: FFmpeg stitch with broadcast mastering ----
+              # Video: hold last frame 2s, fixed 30fps, yuv420p, faststart
+              # Audio: skip external limiter (voice is already mastered);
+        #        just encode to AAC 192k at 48kHz (YouTube-native)
+ffmpeg_cmd = [
+    "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+    "-i", temp_video,
+    "-i", temp_audio,
+    "-filter_complex",
+    "[0:v]tpad=stop_mode=clone:stop_duration=2,fps=30,format=yuv420p[v];"
+    "[1:a]aresample=48000,apad=pad_len=96000[a]",
+    "-map", "[v]", "-map", "[a]",
+    "-c:v", "libx264",
+    "-preset", "veryfast",
+    "-crf", "20",
+    "-c:a", "aac", "-b:a", "192k", "-ar", "48000",
+    "-movflags", "+faststart",
+    "-shortest",
+    final_output,
         ]
+     
         subprocess.run(ffmpeg_cmd, check=True, timeout=FFMPEG_TIMEOUT)
 
         print(f"[COMPLETE] {final_output}")
