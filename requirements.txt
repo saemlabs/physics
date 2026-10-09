@@ -1,29 +1,29 @@
 # ---------- Core Animation Engine ----------
 manim==0.18.1
-numpy>=1.24.0,<2.0.0
-scipy>=1.10.0,<1.13.0
-Pillow>=10.0.0
+numpy==1.26.4
+scipy==1.11.4
+Pillow==10.2.0
 
 # ---------- Manim Dependencies ----------
-pycairo>=1.24.0
-pydub>=0.25.1
-rich>=13.0.0
-tqdm>=4.66.0
-click>=8.1.0
-pyyaml>=6.0.0
+pycairo==1.26.0
+pydub==0.25.1
+rich==13.7.1
+tqdm==4.66.2
+click==8.1.7
+pyyaml==6.0.1
 
 # ---------- Voice Cloning Stack (XTTS-v2) ----------
-setuptools<70.0.0
-Cython>=3.0.0
+setuptools==69.5.1
+Cython==3.0.10
 torch==2.2.2
 torchaudio==2.2.2
-soundfile>=0.12.1
+soundfile==0.12.1
 TTS==0.22.0
 transformers==4.38.2
-huggingface_hub>=0.20.0,<0.23.0
-coqpit>=0.0.16
-trainer>=0.0.30
+huggingface_hub==0.22.2
+coqpit==0.0.16
+trainer==0.0.36
 
 # ---------- Development & Utilities ----------
-python-dotenv>=1.0.0
-pytest>=8.0.0
+python-dotenv==1.0.1
+pytest==8.1.1
