@@ -4,9 +4,6 @@ on:
   push:
     branches: [main, master]
     paths-ignore: ['**.md', '.gitignore', 'LICENSE']
-  pull_request:
-    branches: [main, master]
-    paths-ignore: ['**.md', '.gitignore', 'LICENSE']
   workflow_dispatch:
 
 concurrency:
@@ -20,7 +17,7 @@ env:
 
 jobs:
   preflight:
-    name: Pre-flight CSV & Schema Validation
+    name: Pre-flight Validation
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
@@ -32,7 +29,7 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Validate CSV & JSON specs
+      - name: Validate CSV & JSON
         id: validate
         run: |
           set -euo pipefail
@@ -40,16 +37,16 @@ jobs:
           COUNT=$(python -c "import csv; print(sum(1 for _ in csv.reader(open('content_batch.csv')))-1)")
           echo "job_count=$COUNT" >> "$GITHUB_OUTPUT"
           {
-            echo "### Pre-flight Checklist Passed :rocket:"
+            echo "### Pre-flight Passed :rocket:"
             echo ""
-            echo "Validated **$COUNT** physics short specifications."
+            echo "Validated **$COUNT** specs."
           } >> "$GITHUB_STEP_SUMMARY"
 
   render:
-    name: Parallel Render Worker
+    name: Parallel Render Worker (${{ matrix.worker }})
     needs: preflight
     runs-on: ubuntu-latest
-    timeout-minutes: 360
+    timeout-minutes: 240
     strategy:
       matrix:
         worker: [0, 1, 2, 3]
@@ -59,7 +56,7 @@ jobs:
 
       - name: Install system dependencies
         run: |
-          echo "::group::Installing LaTeX, FFmpeg, and native libs"
+          echo "::group::Installing LaTeX + FFmpeg + native libs"
           sudo DEBIAN_FRONTEND=noninteractive apt-get update -y
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
             ffmpeg \
@@ -88,7 +85,15 @@ jobs:
             ~/.cache/huggingface
           key: xtts-v2-${{ runner.os }}-${{ hashFiles('requirements.txt') }}
 
-      - name: Execute parallel shard batch
+      - name: Pre-flight compile check (catches syntax errors)
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            soundscape.py generate_audio.py render_universal.py \
+            schema_validator.py batch_runner.py
+          echo "  ✓ all Python files compile"
+
+      - name: Execute shard
         run: |
           mkdir -p dist
           python batch_runner.py \
@@ -112,32 +117,36 @@ jobs:
     if: always()
     timeout-minutes: 15
     steps:
-      - name: Download all worker artifacts
-        uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v4
         with:
           pattern: physics-shorts-worker-*-${{ github.run_id }}
           merge-multiple: true
           path: final
 
-      - name: Build job summary
+      - name: Build summary
         run: |
           set -euo pipefail
-          COUNT=$(find final -name '*.mp4' | wc -l)
+          COUNT=$(find final -name '*.mp4' 2>/dev/null | wc -l)
           SIZE=$(du -sh final 2>/dev/null | cut -f1 || echo "0B")
           {
-            echo "# 🎬 Physics Shorts Production Summary"
+            echo "# 🎬 Physics Shorts — Production Summary"
             echo ""
-            echo "> **Status:** Generated **$COUNT video(s)** ($SIZE total)"
+            echo "**Status:** $COUNT video(s), $SIZE total"
             echo ""
-            echo "| Filename | File Size |"
-            echo "| :--- | :---: |"
+            if [ "$COUNT" -gt 0 ]; then
+              echo "| Filename | Size |"
+              echo "| :--- | :---: |"
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
-          find final -name '*.mp4' -printf '%f\t%s\n' | while IFS=$'\t' read -r f b; do
-            MB=$(awk "BEGIN {printf \"%.2f\", $b/1048576}")
-            echo "| \`$f\` | **${MB} MB** |" >> "$GITHUB_STEP_SUMMARY"
-          done
+          if [ "$COUNT" -gt 0 ]; then
+            find final -name '*.mp4' -printf '%f\t%s\n' | while IFS=$'\t' read -r f b; do
+              MB=$(awk "BEGIN {printf \"%.2f\", $b/1048576}")
+              echo "| \`$f\` | **${MB} MB** |" >> "$GITHUB_STEP_SUMMARY"
+            done
+          fi
 
       - name: Upload final bundle
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: physics-shorts-final-${{ github.run_id }}
