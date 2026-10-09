@@ -4,6 +4,9 @@ on:
   push:
     branches: [main, master]
     paths-ignore: ['**.md', '.gitignore', 'LICENSE']
+  pull_request:
+    branches: [main, master]
+    paths-ignore: ['**.md', '.gitignore', 'LICENSE']
   workflow_dispatch:
 
 concurrency:
@@ -16,6 +19,9 @@ env:
   COQUI_TOS_AGREED: '1'
 
 jobs:
+  # ==================================================================
+  # Job 1 — Pre-flight: validate CSV, JSON, and voice reference
+  # ==================================================================
   preflight:
     name: Pre-flight Validation
     runs-on: ubuntu-latest
@@ -29,6 +35,15 @@ jobs:
         with:
           python-version: '3.11'
 
+      - name: Verify reference voice sample exists
+        run: |
+          set -euo pipefail
+          test -f saem_voice_sample.wav || {
+            echo "::error file=saem_voice_sample.wav::Reference voice sample is missing. XTTS is the ONLY synthesizer — place your sample at repo root."
+            exit 1
+          }
+          ls -lh saem_voice_sample.wav
+
       - name: Validate CSV & JSON
         id: validate
         run: |
@@ -39,11 +54,14 @@ jobs:
           {
             echo "### Pre-flight Passed :rocket:"
             echo ""
-            echo "Validated **$COUNT** specs."
+            echo "Validated **$COUNT** physics short specifications."
           } >> "$GITHUB_STEP_SUMMARY"
 
+  # ==================================================================
+  # Job 2 — Parallel render workers (4-way matrix)
+  # ==================================================================
   render:
-    name: Parallel Render Worker (${{ matrix.worker }})
+    name: Render Worker (${{ matrix.worker }})
     needs: preflight
     runs-on: ubuntu-latest
     timeout-minutes: 240
@@ -85,7 +103,7 @@ jobs:
             ~/.cache/huggingface
           key: xtts-v2-${{ runner.os }}-${{ hashFiles('requirements.txt') }}
 
-      - name: Pre-flight compile check (catches syntax errors)
+      - name: Compile-check all Python files
         run: |
           set -euo pipefail
           python -m py_compile \
@@ -93,7 +111,7 @@ jobs:
             schema_validator.py batch_runner.py
           echo "  ✓ all Python files compile"
 
-      - name: Execute shard
+      - name: Execute shard ${{ matrix.worker }}
         run: |
           mkdir -p dist
           python batch_runner.py \
@@ -110,6 +128,9 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
+  # ==================================================================
+  # Job 3 — Aggregate all worker artifacts into a single bundle
+  # ==================================================================
   bundle:
     name: Aggregate & Publish
     needs: render
@@ -117,13 +138,14 @@ jobs:
     if: always()
     timeout-minutes: 15
     steps:
-      - uses: actions/download-artifact@v4
+      - name: Download all worker artifacts
+        uses: actions/download-artifact@v4
         with:
           pattern: physics-shorts-worker-*-${{ github.run_id }}
           merge-multiple: true
           path: final
 
-      - name: Build summary
+      - name: Build job summary
         run: |
           set -euo pipefail
           COUNT=$(find final -name '*.mp4' 2>/dev/null | wc -l)
@@ -133,16 +155,19 @@ jobs:
             echo ""
             echo "**Status:** $COUNT video(s), $SIZE total"
             echo ""
-            if [ "$COUNT" -gt 0 ]; then
-              echo "| Filename | Size |"
-              echo "| :--- | :---: |"
-            fi
           } >> "$GITHUB_STEP_SUMMARY"
           if [ "$COUNT" -gt 0 ]; then
+            {
+              echo "| Filename | Size |"
+              echo "| :--- | :---: |"
+            } >> "$GITHUB_STEP_SUMMARY"
             find final -name '*.mp4' -printf '%f\t%s\n' | while IFS=$'\t' read -r f b; do
               MB=$(awk "BEGIN {printf \"%.2f\", $b/1048576}")
               echo "| \`$f\` | **${MB} MB** |" >> "$GITHUB_STEP_SUMMARY"
             done
+          else
+            echo "_No videos were produced in this run._" >> "$GITHUB_STEP_SUMMARY"
+            echo "::error title=Render Output Empty::No MP4 files were produced."
           fi
 
       - name: Upload final bundle
