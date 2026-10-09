@@ -13,10 +13,6 @@ on:
         description: 'Retries per video on failure'
         required: false
         default: '2'
-      chunk_count:
-        description: 'Parallel chunk count'
-        required: false
-        default: '4'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -30,9 +26,6 @@ env:
   SAFE_MODE: '1'
 
 jobs:
-  # ------------------------------------------------------------------
-  # Job 1 — Structural validation
-  # ------------------------------------------------------------------
   validate:
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -65,7 +58,8 @@ jobs:
 
           for i, row in enumerate(reader, 1):
               vid = row.get('video_id', f'row_{i}')
-              for col in ('equations_json','visual_data_json'):
+              for col in ('equations_json','visual_data_json',
+                          'beats_json','bindings_json'):
                   val = row.get(col, '')
                   if not val:
                       continue
@@ -80,9 +74,6 @@ jobs:
           print('::notice::CSV and JSON structures validated')
           PY
 
-  # ------------------------------------------------------------------
-  # Job 2 — Parallel matrix rendering
-  # ------------------------------------------------------------------
   batch_render:
     needs: validate
     runs-on: ubuntu-latest
@@ -148,13 +139,11 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
-  # ------------------------------------------------------------------
-  # Job 3 — Merge + rich summary
-  # ------------------------------------------------------------------
   merge_artifacts:
     needs: batch_render
     runs-on: ubuntu-latest
     if: always()
+    timeout-minutes: 20
     steps:
       - name: Download all render chunks
         uses: actions/download-artifact@v4
