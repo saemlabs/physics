@@ -79,14 +79,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install minimal system dependencies
+      - name: Install system dependencies
         run: |
+          echo "::group::Installing LaTeX and FFmpeg System Packages"
           sudo DEBIAN_FRONTEND=noninteractive apt-get update -y
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
             ffmpeg \
-            texlive-latex-base texlive-latex-recommended \
+            texlive-latex-base texlive-latex-recommended texlive-latex-extra texlive-science \
             texlive-fonts-recommended dvisvgm \
             libcairo2-dev libpango1.0-dev libsndfile1
+          echo "::endgroup::"
 
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
@@ -96,8 +98,10 @@ jobs:
 
       - name: Install PyTorch CPU & Python requirements
         run: |
+          echo "::group::Installing Python Dependencies & PyTorch CPU"
           python -m pip install --upgrade "pip<24.1"
           pip install --prefer-binary -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cpu
+          echo "::endgroup::"
 
       - name: Cache AI model weights (XTTS-v2)
         id: model_cache
@@ -107,8 +111,6 @@ jobs:
             ~/.cache/huggingface
             ~/.local/share/tts
           key: ai-models-xtts-v2-${{ runner.os }}-${{ hashFiles('requirements.txt') }}
-          restore-keys: |
-            ai-models-xtts-v2-${{ runner.os }}-
 
       - name: Run batch render (Chunk ${{ matrix.chunk }}/${{ strategy.job-total }})
         env:
@@ -131,17 +133,8 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
-      - name: Upload run log (Chunk ${{ matrix.chunk }})
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: runlog-chunk-${{ matrix.chunk }}-${{ github.run_id }}
-          path: output_shorts/runlog_*.json
-          if-no-files-found: warn
-          retention-days: 14
-
   # ------------------------------------------------------------------
-  # Job 3 — Merge chunk artifacts into a single output bundle
+  # Job 3 — Enhanced Summary Generation ($GITHUB_STEP_SUMMARY)
   # ------------------------------------------------------------------
   merge_artifacts:
     needs: batch_render
@@ -155,23 +148,46 @@ jobs:
           merge-multiple: true
           path: merged
 
-      - name: Generate build summary table
+      - name: Flatten files & generate rich job summary
         run: |
-          echo "## Physics Shorts Render Summary" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          if [ -d "merged" ] && [ "$(ls -A merged/*.mp4 2>/devnull)" ]; then
-            echo "| File | Size (MB) |" >> $GITHUB_STEP_SUMMARY
-            echo "|---|---|" >> $GITHUB_STEP_SUMMARY
-            find merged -name '*.mp4' -printf '%p\t%s\n' | \
-              awk -F'\t' '{printf "| %s | %.2f |\n", $1, $2/1048576}' >> $GITHUB_STEP_SUMMARY
+          mkdir -p final_mp4s
+          find merged -type f -name "*.mp4" -exec mv {} final_mp4s/ \;
+          
+          TOTAL_COUNT=$(find final_mp4s -name '*.mp4' | wc -l)
+          TOTAL_SIZE=$(du -sh final_mp4s 2>/devnull | cut -f1 || echo "0B")
+
+          if [ "$TOTAL_COUNT" -gt 0 ]; then
+            cat << EOF >> $GITHUB_STEP_SUMMARY
+          # 🎬 Physics Shorts Production Summary
+
+          > **Status:** Successfully generated **$TOTAL_COUNT video(s)** ($TOTAL_SIZE total storage)
+
+          ### 📦 Generated Render Output Table
+
+          | Video ID / Filename | Resolution | File Size |
+          | :--- | :---: | :---: |
+          EOF
+
+            find final_mp4s -name '*.mp4' -printf '%f\t%s\n' | while IFS=$'\t' read -r fname fbytes; do
+              MB=$(awk "BEGIN {printf \"\%.2f\", $fbytes/1048576}")
+              echo "| \`$fname\` | 1080x1920 (9:16) | **${MB} MB** |" >> $GITHUB_STEP_SUMMARY
+            done
+
           else
-            echo "No MP4 files generated in this run." >> $GITHUB_STEP_SUMMARY
+            cat << EOF >> $GITHUB_STEP_SUMMARY
+          # ⚠️ Physics Shorts Production Summary
+
+          > **Status:** No MP4 files were generated in this run.
+
+          Check job logs for potential LaTeX compilation errors or Coqui TTS synthesis timeouts.
+          EOF
+            echo "::error title=Render Output Empty::No MP4 video files were produced during this execution run."
           fi
 
       - name: Upload final merged bundle
         uses: actions/upload-artifact@v4
         with:
           name: physics-shorts-final-${{ github.run_id }}
-          path: merged/*.mp4
+          path: final_mp4s/*.mp4
           if-no-files-found: warn
           retention-days: 7
