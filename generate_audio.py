@@ -133,19 +133,24 @@ def synthesize_audio_for_row(
     gpt_cond_latent, speaker_embedding = _get_speaker_latent(tts, speaker_wav)
 
     try:
-        tts.tts_to_file(
+        # Direct XTTS model inference to avoid wrapper argument collisions
+        result = tts.synthesizer.tts_model.inference(
             text=script,
-            file_path=str(voice_path),
-            speaker_wav=speaker_wav,
+            language=language,
             gpt_cond_latent=gpt_cond_latent,
             speaker_embedding=speaker_embedding,
-            language=language,
             temperature=0.65,
             speed=1.0,
             repetition_penalty=3.0,
-            split_sentences=True,
+            enable_text_splitting=True,
         )
-    except RuntimeError as e:
+        wav_raw = result["wav"]
+        if isinstance(wav_raw, torch.Tensor):
+            wav_raw = wav_raw.cpu().detach().numpy()
+        wav_data = np.array(wav_raw, dtype=np.float32)
+        sf.write(str(voice_path), wav_data, 24000, subtype='PCM_16')
+
+    except Exception as e:
         if "cuda out of memory" in str(e).lower() or "cuda" in str(e).lower():
             print("[TTS] CUDA Out Of Memory detected. Retrying synthesis on CPU...")
             global _TTS_MODEL, _SPEAKER_LATENT
@@ -154,18 +159,21 @@ def synthesize_audio_for_row(
             tts = get_tts_model(use_gpu=False)
             gpt_cond_latent, speaker_embedding = _get_speaker_latent(tts, speaker_wav)
             
-            tts.tts_to_file(
+            result = tts.synthesizer.tts_model.inference(
                 text=script,
-                file_path=str(voice_path),
-                speaker_wav=speaker_wav,
+                language=language,
                 gpt_cond_latent=gpt_cond_latent,
                 speaker_embedding=speaker_embedding,
-                language=language,
                 temperature=0.65,
                 speed=1.0,
                 repetition_penalty=3.0,
-                split_sentences=True,
+                enable_text_splitting=True,
             )
+            wav_raw = result["wav"]
+            if isinstance(wav_raw, torch.Tensor):
+                wav_raw = wav_raw.cpu().detach().numpy()
+            wav_data = np.array(wav_raw, dtype=np.float32)
+            sf.write(str(voice_path), wav_data, 24000, subtype='PCM_16')
         else:
             raise
 
