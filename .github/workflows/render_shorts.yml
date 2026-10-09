@@ -1,18 +1,13 @@
-name: Bulk Render Physics Shorts
+name: Automated Vertical Physics Shorts Pipeline
 
 on:
   push:
-    branches: [main]
+    branches: [main, master]
     paths-ignore: ['**.md', '.gitignore', 'LICENSE']
   pull_request:
-    branches: [main]
+    branches: [main, master]
     paths-ignore: ['**.md', '.gitignore', 'LICENSE']
   workflow_dispatch:
-    inputs:
-      retries:
-        description: 'Retries per video on failure'
-        required: false
-        default: '2'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -22,176 +17,130 @@ env:
   PIP_DISABLE_PIP_VERSION_CHECK: '1'
   PYTHONUNBUFFERED: '1'
   COQUI_TOS_AGREED: '1'
-  MANIM_VERBOSE: '0'
-  SAFE_MODE: '1'
 
 jobs:
-  validate:
+  preflight:
+    name: Pre-flight CSV & Schema Validation
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    outputs:
+      job_count: ${{ steps.validate.outputs.job_count }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Pre-flight File Existence Check
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Validate CSV & JSON specs
+        id: validate
         run: |
           set -euo pipefail
-          for f in content_batch.csv saem_voice_sample.wav render_universal.py \
-                   manim_fx.py batch_runner.py generate_audio.py requirements.txt; do
-            test -f "$f" || { echo "::error file=$f::$f is missing"; exit 1; }
-          done
+          python schema_validator.py content_batch.csv
+          COUNT=$(python -c "import csv; print(sum(1 for _ in csv.reader(open('content_batch.csv')))-1)")
+          echo "job_count=$COUNT" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Pre-flight Checklist Passed :rocket:"
+            echo ""
+            echo "Validated **$COUNT** physics short specifications."
+          } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Validate CSV & JSON Integrity
-        run: |
-          python3 - <<'PY'
-          import csv, json, sys
-          with open('content_batch.csv', mode='r', encoding='utf-8') as f:
-              reader = list(csv.DictReader(f))
-          if not reader:
-              print('::error file=content_batch.csv::CSV is empty'); sys.exit(1)
-
-          req = {'video_id','concept_type','header_title','equations_json',
-                 'visual_data_json','audio_script'}
-          missing = req - set(reader[0].keys())
-          if missing:
-              print(f'::error file=content_batch.csv::Missing headers: {missing}')
-              sys.exit(1)
-
-          for i, row in enumerate(reader, 1):
-              vid = row.get('video_id', f'row_{i}')
-              for col in ('equations_json','visual_data_json',
-                          'beats_json','bindings_json'):
-                  val = row.get(col, '')
-                  if not val:
-                      continue
-                  try:
-                      parsed = json.loads(val)
-                      if isinstance(parsed, str):
-                          json.loads(parsed)
-                  except Exception as e:
-                      print(f'::error file=content_batch.csv,line={i+1}::'
-                            f'Row {i} ({vid}) col {col}: {e}')
-                      sys.exit(1)
-          print('::notice::CSV and JSON structures validated')
-          PY
-
-  batch_render:
-    needs: validate
+  render:
+    name: Parallel Render Worker
+    needs: preflight
     runs-on: ubuntu-latest
     timeout-minutes: 360
     strategy:
-      fail-fast: false
       matrix:
-        chunk: [0, 1, 2, 3]
+        worker: [0, 1, 2, 3]
+      fail-fast: false
     steps:
       - uses: actions/checkout@v4
 
       - name: Install system dependencies
         run: |
-          echo "::group::Installing LaTeX and FFmpeg"
+          echo "::group::Installing LaTeX, FFmpeg, and native libs"
           sudo DEBIAN_FRONTEND=noninteractive apt-get update -y
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
             ffmpeg \
-            texlive-latex-base texlive-latex-recommended texlive-latex-extra texlive-science \
-            texlive-fonts-recommended dvisvgm \
+            texlive-latex-base texlive-latex-recommended texlive-latex-extra \
+            texlive-science texlive-fonts-recommended texlive-plain-generic dvisvgm \
             libcairo2-dev libpango1.0-dev libsndfile1 \
             espeak-ng fonts-noto
           echo "::endgroup::"
 
-      - name: Set up Python 3.11
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: 'pip'
 
       - name: Install Python dependencies
         run: |
-          echo "::group::Installing Python deps"
           python -m pip install --upgrade "pip<24.1"
           pip install --prefer-binary -r requirements.txt \
             --extra-index-url https://download.pytorch.org/whl/cpu
-          echo "::endgroup::"
 
       - name: Cache XTTS-v2 model weights
         uses: actions/cache@v4
         with:
           path: |
-            ~/.cache/huggingface
             ~/.local/share/tts
-          key: ai-models-xtts-v2-${{ runner.os }}-${{ hashFiles('requirements.txt') }}
+            ~/.cache/huggingface
+          key: xtts-v2-${{ runner.os }}-${{ hashFiles('requirements.txt') }}
 
-      - name: Run batch render (Chunk ${{ matrix.chunk }})
-        env:
-          HINDI_FONT: "Noto Sans Devanagari"
+      - name: Execute parallel shard batch
         run: |
-          mkdir -p output_shorts
+          mkdir -p dist
           python batch_runner.py \
-            --chunk ${{ matrix.chunk }} \
-            --total-chunks ${{ strategy.job-total }} \
-            --retries ${{ github.event.inputs.retries || '2' }} \
-            --log-file output_shorts/runlog_${{ matrix.chunk }}.json
+            --shard-index ${{ matrix.worker }} \
+            --shard-total 4 \
+            --output_dir dist
 
-      - name: Upload rendered shorts (Chunk ${{ matrix.chunk }})
+      - name: Upload worker artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: physics-shorts-chunk-${{ matrix.chunk }}-${{ github.run_id }}
-          path: output_shorts/*.mp4
+          name: physics-shorts-worker-${{ matrix.worker }}-${{ github.run_id }}
+          path: dist/*.mp4
           if-no-files-found: warn
           retention-days: 7
 
-  merge_artifacts:
-    needs: batch_render
+  bundle:
+    name: Aggregate & Publish
+    needs: render
     runs-on: ubuntu-latest
     if: always()
-    timeout-minutes: 20
+    timeout-minutes: 15
     steps:
-      - name: Download all render chunks
+      - name: Download all worker artifacts
         uses: actions/download-artifact@v4
         with:
-          pattern: physics-shorts-chunk-*
+          pattern: physics-shorts-worker-*-${{ github.run_id }}
           merge-multiple: true
-          path: merged
+          path: final
 
-      - name: Flatten and generate job summary
+      - name: Build job summary
         run: |
           set -euo pipefail
-          mkdir -p final_mp4s
-          find merged -type f -name "*.mp4" -exec mv {} final_mp4s/ \; 2>/dev/null || true
+          COUNT=$(find final -name '*.mp4' | wc -l)
+          SIZE=$(du -sh final 2>/dev/null | cut -f1 || echo "0B")
+          {
+            echo "# 🎬 Physics Shorts Production Summary"
+            echo ""
+            echo "> **Status:** Generated **$COUNT video(s)** ($SIZE total)"
+            echo ""
+            echo "| Filename | File Size |"
+            echo "| :--- | :---: |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          find final -name '*.mp4' -printf '%f\t%s\n' | while IFS=$'\t' read -r f b; do
+            MB=$(awk "BEGIN {printf \"%.2f\", $b/1048576}")
+            echo "| \`$f\` | **${MB} MB** |" >> "$GITHUB_STEP_SUMMARY"
+          done
 
-          TOTAL_COUNT=$(find final_mp4s -name '*.mp4' | wc -l)
-          TOTAL_SIZE=$(du -sh final_mp4s 2>/dev/null | cut -f1 || echo "0B")
-
-          if [ "$TOTAL_COUNT" -gt 0 ]; then
-            {
-              echo "# 🎬 Physics Shorts Production Summary"
-              echo
-              echo "> **Status:** Successfully generated **$TOTAL_COUNT video(s)** ($TOTAL_SIZE total)"
-              echo
-              echo "### 📦 Generated Render Output Table"
-              echo
-              echo "| Video ID / Filename | Resolution | File Size |"
-              echo "| :--- | :---: | :---: |"
-            } >> "$GITHUB_STEP_SUMMARY"
-
-            find final_mp4s -name '*.mp4' -printf '%f\t%s\n' | while IFS=$'\t' read -r fname fbytes; do
-              MB=$(awk "BEGIN {printf \"%.2f\", $fbytes/1048576}")
-              echo "| \`$fname\` | 1080x1920 (9:16) | **${MB} MB** |" >> "$GITHUB_STEP_SUMMARY"
-            done
-          else
-            {
-              echo "# ⚠️ Physics Shorts Production Summary"
-              echo
-              echo "> **Status:** No MP4 files were generated in this run."
-              echo
-              echo "Check job logs for LaTeX compilation errors or XTTS synthesis timeouts."
-            } >> "$GITHUB_STEP_SUMMARY"
-            echo "::error title=Render Output Empty::No MP4 video files were produced."
-          fi
-
-      - name: Upload final merged bundle
+      - name: Upload final bundle
         uses: actions/upload-artifact@v4
         with:
           name: physics-shorts-final-${{ github.run_id }}
-          path: final_mp4s/*.mp4
+          path: final/*.mp4
           if-no-files-found: warn
           retention-days: 7
