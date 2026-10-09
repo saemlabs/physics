@@ -10,17 +10,28 @@ on:
   workflow_dispatch:
     inputs:
       retries:
-        description: 'Number of retries per video on failure'
+        description: 'Retries per video on failure'
         required: false
         default: '2'
+      chunk_count:
+        description: 'Parallel chunk count'
+        required: false
+        default: '4'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  PIP_DISABLE_PIP_VERSION_CHECK: '1'
+  PYTHONUNBUFFERED: '1'
+  COQUI_TOS_AGREED: '1'
+  MANIM_VERBOSE: '0'
+  SAFE_MODE: '1'
+
 jobs:
   # ------------------------------------------------------------------
-  # Job 1 — Fast structural validation using standard Python library
+  # Job 1 — Structural validation
   # ------------------------------------------------------------------
   validate:
     runs-on: ubuntu-latest
@@ -30,43 +41,47 @@ jobs:
 
       - name: Pre-flight File Existence Check
         run: |
-          test -f content_batch.csv       || { echo "::error::content_batch.csv missing"; exit 1; }
-          test -f saem_voice_sample.wav   || { echo "::error::saem_voice_sample.wav missing"; exit 1; }
-          test -f render_universal.py     || { echo "::error::render_universal.py missing"; exit 1; }
-          test -f batch_runner.py         || { echo "::error::batch_runner.py missing"; exit 1; }
-          test -f generate_audio.py       || { echo "::error::generate_audio.py missing"; exit 1; }
+          set -euo pipefail
+          for f in content_batch.csv saem_voice_sample.wav render_universal.py \
+                   manim_fx.py batch_runner.py generate_audio.py requirements.txt; do
+            test -f "$f" || { echo "::error file=$f::$f is missing"; exit 1; }
+          done
 
       - name: Validate CSV & JSON Integrity
         run: |
-          python3 -c "
+          python3 - <<'PY'
           import csv, json, sys
-
           with open('content_batch.csv', mode='r', encoding='utf-8') as f:
               reader = list(csv.DictReader(f))
-              if not reader:
-                  print('::error::content_batch.csv is empty'); sys.exit(1)
-              
-              req_headers = {'video_id', 'concept_type', 'header_title', 'equations_json', 'visual_data_json', 'audio_script'}
-              missing = req_headers - set(reader[0].keys())
-              if missing:
-                  print(f'::error::Missing required headers: {missing}'); sys.exit(1)
+          if not reader:
+              print('::error file=content_batch.csv::CSV is empty'); sys.exit(1)
 
-              for idx, row in enumerate(reader, 1):
-                  vid = row.get('video_id', f'row_{idx}')
-                  for col in ('equations_json', 'visual_data_json'):
-                      val = row.get(col, '')
-                      if val:
-                          try:
-                              parsed = json.loads(val)
-                              if isinstance(parsed, str): json.loads(parsed)
-                          except Exception as e:
-                              print(f'::error::Row {idx} ({vid}) column {col} invalid JSON: {e}')
-                              sys.exit(1)
-          print('CSV and JSON structures validated successfully!')
-          "
+          req = {'video_id','concept_type','header_title','equations_json',
+                 'visual_data_json','audio_script'}
+          missing = req - set(reader[0].keys())
+          if missing:
+              print(f'::error file=content_batch.csv::Missing headers: {missing}')
+              sys.exit(1)
+
+          for i, row in enumerate(reader, 1):
+              vid = row.get('video_id', f'row_{i}')
+              for col in ('equations_json','visual_data_json'):
+                  val = row.get(col, '')
+                  if not val:
+                      continue
+                  try:
+                      parsed = json.loads(val)
+                      if isinstance(parsed, str):
+                          json.loads(parsed)
+                  except Exception as e:
+                      print(f'::error file=content_batch.csv,line={i+1}::'
+                            f'Row {i} ({vid}) col {col}: {e}')
+                      sys.exit(1)
+          print('::notice::CSV and JSON structures validated')
+          PY
 
   # ------------------------------------------------------------------
-  # Job 2 — Parallel matrix rendering across 4 CPU shards (Python 3.11)
+  # Job 2 — Parallel matrix rendering
   # ------------------------------------------------------------------
   batch_render:
     needs: validate
@@ -75,19 +90,20 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        chunk: [0, 1, 2, 3]     # 4 parallel workers
+        chunk: [0, 1, 2, 3]
     steps:
       - uses: actions/checkout@v4
 
       - name: Install system dependencies
         run: |
-          echo "::group::Installing LaTeX and FFmpeg System Packages"
+          echo "::group::Installing LaTeX and FFmpeg"
           sudo DEBIAN_FRONTEND=noninteractive apt-get update -y
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
             ffmpeg \
             texlive-latex-base texlive-latex-recommended texlive-latex-extra texlive-science \
             texlive-fonts-recommended dvisvgm \
-            libcairo2-dev libpango1.0-dev libsndfile1
+            libcairo2-dev libpango1.0-dev libsndfile1 \
+            espeak-ng fonts-noto
           echo "::endgroup::"
 
       - name: Set up Python 3.11
@@ -96,15 +112,15 @@ jobs:
           python-version: '3.11'
           cache: 'pip'
 
-      - name: Install PyTorch CPU & Python requirements
+      - name: Install Python dependencies
         run: |
-          echo "::group::Installing Python Dependencies & PyTorch CPU"
+          echo "::group::Installing Python deps"
           python -m pip install --upgrade "pip<24.1"
-          pip install --prefer-binary -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cpu
+          pip install --prefer-binary -r requirements.txt \
+            --extra-index-url https://download.pytorch.org/whl/cpu
           echo "::endgroup::"
 
-      - name: Cache AI model weights (XTTS-v2)
-        id: model_cache
+      - name: Cache XTTS-v2 model weights
         uses: actions/cache@v4
         with:
           path: |
@@ -112,16 +128,15 @@ jobs:
             ~/.local/share/tts
           key: ai-models-xtts-v2-${{ runner.os }}-${{ hashFiles('requirements.txt') }}
 
-      - name: Run batch render (Chunk ${{ matrix.chunk }}/${{ strategy.job-total }})
+      - name: Run batch render (Chunk ${{ matrix.chunk }})
         env:
-          COQUI_TOS_AGREED: "1"
-          MANIM_VERBOSE: "1"
+          HINDI_FONT: "Noto Sans Devanagari"
         run: |
           mkdir -p output_shorts
           python batch_runner.py \
             --chunk ${{ matrix.chunk }} \
             --total-chunks ${{ strategy.job-total }} \
-            --retries ${{ inputs.retries || '2' }} \
+            --retries ${{ github.event.inputs.retries || '2' }} \
             --log-file output_shorts/runlog_${{ matrix.chunk }}.json
 
       - name: Upload rendered shorts (Chunk ${{ matrix.chunk }})
@@ -134,7 +149,7 @@ jobs:
           retention-days: 7
 
   # ------------------------------------------------------------------
-  # Job 3 — Enhanced Summary Generation ($GITHUB_STEP_SUMMARY)
+  # Job 3 — Merge + rich summary
   # ------------------------------------------------------------------
   merge_artifacts:
     needs: batch_render
@@ -148,40 +163,40 @@ jobs:
           merge-multiple: true
           path: merged
 
-      - name: Flatten files & generate rich job summary
+      - name: Flatten and generate job summary
         run: |
+          set -euo pipefail
           mkdir -p final_mp4s
-          find merged -type f -name "*.mp4" -exec mv {} final_mp4s/ \;
-          
+          find merged -type f -name "*.mp4" -exec mv {} final_mp4s/ \; 2>/dev/null || true
+
           TOTAL_COUNT=$(find final_mp4s -name '*.mp4' | wc -l)
-          TOTAL_SIZE=$(du -sh final_mp4s 2>/devnull | cut -f1 || echo "0B")
+          TOTAL_SIZE=$(du -sh final_mp4s 2>/dev/null | cut -f1 || echo "0B")
 
           if [ "$TOTAL_COUNT" -gt 0 ]; then
-            cat << EOF >> $GITHUB_STEP_SUMMARY
-          # 🎬 Physics Shorts Production Summary
-
-          > **Status:** Successfully generated **$TOTAL_COUNT video(s)** ($TOTAL_SIZE total storage)
-
-          ### 📦 Generated Render Output Table
-
-          | Video ID / Filename | Resolution | File Size |
-          | :--- | :---: | :---: |
-          EOF
+            {
+              echo "# 🎬 Physics Shorts Production Summary"
+              echo
+              echo "> **Status:** Successfully generated **$TOTAL_COUNT video(s)** ($TOTAL_SIZE total)"
+              echo
+              echo "### 📦 Generated Render Output Table"
+              echo
+              echo "| Video ID / Filename | Resolution | File Size |"
+              echo "| :--- | :---: | :---: |"
+            } >> "$GITHUB_STEP_SUMMARY"
 
             find final_mp4s -name '*.mp4' -printf '%f\t%s\n' | while IFS=$'\t' read -r fname fbytes; do
-              MB=$(awk "BEGIN {printf \"\%.2f\", $fbytes/1048576}")
-              echo "| \`$fname\` | 1080x1920 (9:16) | **${MB} MB** |" >> $GITHUB_STEP_SUMMARY
+              MB=$(awk "BEGIN {printf \"%.2f\", $fbytes/1048576}")
+              echo "| \`$fname\` | 1080x1920 (9:16) | **${MB} MB** |" >> "$GITHUB_STEP_SUMMARY"
             done
-
           else
-            cat << EOF >> $GITHUB_STEP_SUMMARY
-          # ⚠️ Physics Shorts Production Summary
-
-          > **Status:** No MP4 files were generated in this run.
-
-          Check job logs for potential LaTeX compilation errors or Coqui TTS synthesis timeouts.
-          EOF
-            echo "::error title=Render Output Empty::No MP4 video files were produced during this execution run."
+            {
+              echo "# ⚠️ Physics Shorts Production Summary"
+              echo
+              echo "> **Status:** No MP4 files were generated in this run."
+              echo
+              echo "Check job logs for LaTeX compilation errors or XTTS synthesis timeouts."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::error title=Render Output Empty::No MP4 video files were produced."
           fi
 
       - name: Upload final merged bundle
