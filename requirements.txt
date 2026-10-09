@@ -18,4 +18,3 @@ transformers==4.38.2
 huggingface_hub==0.22.2
 coqpit==0.0.16
 trainer==0.0.36
-edge-tts==6.1.12
