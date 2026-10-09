@@ -1,5 +1,5 @@
 """
-generate_audio.py — XTTS-v2 voice synthesis + ambient background pad.
+generate_audio.py — Neural voice synthesis (XTTS-v2) & ambient background pad.
 """
 
 from __future__ import annotations
@@ -133,7 +133,7 @@ def synthesize_audio_for_row(
     gpt_cond_latent, speaker_embedding = _get_speaker_latent(tts, speaker_wav)
 
     try:
-        # Direct XTTS model inference to avoid wrapper argument collisions
+        # Direct XTTS model inference call to bypass wrapper parameter duplication
         result = tts.synthesizer.tts_model.inference(
             text=script,
             language=language,
