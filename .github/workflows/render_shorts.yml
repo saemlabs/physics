@@ -97,8 +97,7 @@ jobs:
       - name: Install PyTorch CPU & Python requirements
         run: |
           python -m pip install --upgrade "pip<24.1"
-          pip install --prefer-binary torch --extra-index-url https://download.pytorch.org/whl/cpu
-          pip install --prefer-binary -r requirements.txt
+          pip install --prefer-binary -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cpu
 
       - name: Cache AI model weights (XTTS-v2)
         id: model_cache
@@ -120,6 +119,7 @@ jobs:
           python batch_runner.py \
             --chunk ${{ matrix.chunk }} \
             --total-chunks ${{ strategy.job-total }} \
+            --retries ${{ inputs.retries || '2' }} \
             --log-file output_shorts/runlog_${{ matrix.chunk }}.json
 
       - name: Upload rendered shorts (Chunk ${{ matrix.chunk }})
@@ -154,12 +154,13 @@ jobs:
           pattern: physics-shorts-chunk-*
           merge-multiple: true
           path: merged
+          ignore-no-files-found: true
 
       - name: Generate build summary table
         run: |
           echo "## Physics Shorts Render Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          if [ -d "merged" ] && [ "$(ls -A merged/*.mp4 2>/dev/null)" ]; then
+          if [ -d "merged" ] && [ "$(ls -A merged/*.mp4 2>/devnull)" ]; then
             echo "| File | Size (MB) |" >> $GITHUB_STEP_SUMMARY
             echo "|---|---|" >> $GITHUB_STEP_SUMMARY
             find merged -name '*.mp4' -printf '%p\t%s\n' | \
