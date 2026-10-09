@@ -1,17 +1,7 @@
 #!/usr/bin/env python3
-"""
-batch_runner.py — Orchestrator: CSV → audio → Manim → FFmpeg → MP4.
-
-Fixes vs. previous version:
-  * Explicit --resolution 1080,1920 --fps 30 to Manim CLI
-  * subprocess calls have timeouts
-  * Temp files cleaned even on failure
-  * faststart + alimiter in FFmpeg stitcher
-  * passes --speaker_wav through to generate_audio
-"""
+"""batch_runner.py — CSV → audio → Manim → FFmpeg pipeline."""
 
 from __future__ import annotations
-
 import argparse
 import csv
 import json
@@ -23,64 +13,83 @@ from wave import open as wave_open
 
 from schema_validator import safe_json_loads, validate_csv
 
-MANIM_TIMEOUT = 600     # 10 min per video
-AUDIO_TIMEOUT = 300     # 5 min
+MANIM_TIMEOUT = 600
+AUDIO_TIMEOUT = 300
 FFMPEG_TIMEOUT = 120
 
 
-def get_wav_duration(wav_path: str) -> float:
-    with wave_open(wav_path, "rb") as f:
+def _log(m): print(f"[batch] {m}", flush=True)
+
+
+def get_wav_duration(path):
+    with wave_open(path, "rb") as f:
         return f.getnframes() / float(f.getframerate())
 
 
-def sanitize_filename(name: str) -> str:
+def sanitize_filename(name):
     return re.sub(r"[^a-zA-Z0-9_\-]", "", name or "")
 
 
-def parse_csv_file(csv_file: str) -> list[dict]:
+def parse_csv_file(csv_file):
     rows = []
-    with open(csv_file, mode="r", encoding="utf-8", newline="") as f:
+    with open(csv_file, "r", encoding="utf-8", newline="") as f:
         reader = csv.reader(f)
-        next(reader, None)  # header
+        next(reader, None)
         for row in reader:
             if not row or len(row) < 13:
                 continue
             rows.append({
-                "video_id":        row[0].strip(),
-                "concept_type":    row[1].strip(),
-                "header_title":    row[2].strip(),
-                "tagline":         row[3].strip(),
-                "question_text":   row[4].strip(),
-                "option_a":        row[5].strip(),
-                "option_b":        row[6].strip(),
-                "option_c":        row[7].strip(),
-                "option_d":        row[8].strip(),
-                "correct_answer":  row[9].strip(),
-                "equations_json":  row[10].strip(),
+                "video_id":         row[0].strip(),
+                "concept_type":     row[1].strip(),
+                "header_title":     row[2].strip(),
+                "tagline":          row[3].strip(),
+                "question_text":    row[4].strip(),
+                "option_a":         row[5].strip(),
+                "option_b":         row[6].strip(),
+                "option_c":         row[7].strip(),
+                "option_d":         row[8].strip(),
+                "correct_answer":   row[9].strip(),
+                "equations_json":   row[10].strip(),
                 "visual_data_json": row[11].strip(),
-                "audio_script":    row[12].strip(),
+                "audio_script":     row[12].strip(),
             })
     return rows
 
 
-def run_pipeline_for_row(row: dict,
-                         output_dir: str,
-                         speaker_wav: str,
-                         dry_run: bool = False) -> bool:
+def _run(cmd, timeout, label):
+    """Run subprocess and stream stdout/stderr into CI logs. Raises on failure."""
+    _log(f"{label}: {' '.join(str(x) for x in cmd[:3])}...")
+    try:
+        proc = subprocess.run(
+            cmd, timeout=timeout,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True,
+        )
+    except subprocess.TimeoutExpired:
+        _log(f"{label} TIMEOUT after {timeout}s")
+        raise
+    # Stream output regardless of success — CI needs visibility
+    if proc.stdout:
+        for line in proc.stdout.splitlines():
+            _log(f"  | {line}")
+    if proc.returncode != 0:
+        raise RuntimeError(f"{label} exited with code {proc.returncode}")
+
+
+def run_pipeline_for_row(row, output_dir, speaker_wav, dry_run=False) -> bool:
     video_id = sanitize_filename(row["video_id"])
     script = row["audio_script"]
     word_count = len(script.split())
 
-    print("\n" + "=" * 60)
-    print(f" Processing: {video_id} ({word_count} words)")
-    print(f" Header    : {row['header_title']}")
-    print("=" * 60)
+    _log("=" * 60)
+    _log(f"Processing: {video_id} ({word_count} words)")
+    _log(f"Header    : {row['header_title']}")
+    _log("=" * 60)
 
     if dry_run:
-        # Validate JSON structures
         safe_json_loads(row["equations_json"])
         safe_json_loads(row["visual_data_json"])
-        print("[DRY-RUN] Syntax validated.")
+        _log("[DRY-RUN] Syntax validated.")
         return True
 
     os.makedirs(output_dir, exist_ok=True)
@@ -88,8 +97,13 @@ def run_pipeline_for_row(row: dict,
     temp_video = os.path.join(output_dir, f"{video_id}_raw.mp4")
     final_output = os.path.join(output_dir, f"{video_id}.mp4")
 
+    # ============================================================
+    # We wrap the entire pipeline in try/except/finally.
+    # Every step is isolated so we know exactly which one failed.
+    # The finally block ALWAYS cleans up temp files.
+    # ============================================================
     try:
-        # ---- Step 1: audio ----
+        # ---------------- Step 1: Audio ----------------
         audio_cmd = [
             sys.executable, "generate_audio.py",
             "--video_id", video_id,
@@ -97,21 +111,22 @@ def run_pipeline_for_row(row: dict,
             "--speaker_wav", speaker_wav,
             "--output", temp_audio,
         ]
-        subprocess.run(audio_cmd, check=True, timeout=AUDIO_TIMEOUT)
+        _run(audio_cmd, AUDIO_TIMEOUT, "audio")
 
         if not os.path.exists(temp_audio):
-            raise FileNotFoundError(f"Audio synthesis produced no file: {temp_audio}")
+            raise FileNotFoundError(f"audio produced no file: {temp_audio}")
 
         duration = get_wav_duration(temp_audio) + 2.0
+        _log(f"audio duration = {duration:.2f}s")
 
-        # ---- Step 2: options array ----
+        # ---------------- Step 2: Options ----------------
         options_arr = [
             row[f"option_{ch}"]
             for ch in ("a", "b", "c", "d")
             if row.get(f"option_{ch}", "").strip()
         ]
 
-        # ---- Step 3: Manim render ----
+        # ---------------- Step 3: Manim render ----------------
         render_cmd = [
             sys.executable, "render_universal.py",
             "--video_id", video_id,
@@ -125,38 +140,39 @@ def run_pipeline_for_row(row: dict,
             "--duration", str(duration),
             "--output", temp_video,
         ]
-        subprocess.run(render_cmd, check=True, timeout=MANIM_TIMEOUT)
+        _run(render_cmd, MANIM_TIMEOUT, "manim")
 
         if not os.path.exists(temp_video):
-            raise FileNotFoundError(f"Manim produced no file: {temp_video}")
+            raise FileNotFoundError(f"manim produced no file: {temp_video}")
 
-        # ---- Step 4: FFmpeg stitch with broadcast mastering ----
-              # Video: hold last frame 2s, fixed 30fps, yuv420p, faststart
-              # Audio: skip external limiter (voice is already mastered);
-        #        just encode to AAC 192k at 48kHz (YouTube-native)
-ffmpeg_cmd = [
-    "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-    "-i", temp_video,
-    "-i", temp_audio,
-    "-filter_complex",
-    "[0:v]tpad=stop_mode=clone:stop_duration=2,fps=30,format=yuv420p[v];"
-    "[1:a]aresample=48000,apad=pad_len=96000[a]",
-    "-map", "[v]", "-map", "[a]",
-    "-c:v", "libx264",
-    "-preset", "veryfast",
-    "-crf", "20",
-    "-c:a", "aac", "-b:a", "192k", "-ar", "48000",
-    "-movflags", "+faststart",
-    "-shortest",
-    final_output,
+        # ---------------- Step 4: FFmpeg stitch ----------------
+        ffmpeg_cmd = [
+            "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+            "-i", temp_video,
+            "-i", temp_audio,
+            "-filter_complex",
+            "[1:a]alimiter=limit=0.95,apad=pad_len=96000[aout]",
+            "-map", "0:v", "-map", "[aout]",
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+            "-pix_fmt", "yuv420p",
+            "-c:a", "aac", "-b:a", "192k", "-ar", "48000",
+            "-movflags", "+faststart",
+            "-shortest",
+            final_output,
         ]
-     
-        subprocess.run(ffmpeg_cmd, check=True, timeout=FFMPEG_TIMEOUT)
+        _run(ffmpeg_cmd, FFMPEG_TIMEOUT, "ffmpeg")
 
-        print(f"[COMPLETE] {final_output}")
+        _log(f"COMPLETE {final_output}")
         return True
 
+    except subprocess.TimeoutExpired:
+        _log(f"FAILED (timeout): {video_id}")
+        return False
+    except Exception as e:
+        _log(f"FAILED ({type(e).__name__}): {video_id} — {e}")
+        return False
     finally:
+        # ALWAYS remove temp files, whether we succeeded or not
         for f in (temp_audio, temp_video):
             if os.path.exists(f):
                 try:
@@ -177,31 +193,26 @@ def main() -> int:
     args = p.parse_args()
 
     if not validate_csv(args.csv):
-        print("[FATAL] CSV validation failed.", file=sys.stderr)
+        print("[batch] FATAL — CSV validation failed.", file=sys.stderr)
         return 1
 
     rows = parse_csv_file(args.csv)
 
     if args.only:
-        target_ids = {t.strip() for t in args.only.split(",") if t.strip()}
-        rows = [r for r in rows if r["video_id"] in target_ids]
+        ids = {t.strip() for t in args.only.split(",") if t.strip()}
+        rows = [r for r in rows if r["video_id"] in ids]
 
     if args.shard_total > 1:
         rows = [r for i, r in enumerate(rows) if i % args.shard_total == args.shard_index]
 
-    print(f"[INFO] {len(rows)} jobs for worker {args.shard_index + 1}/{args.shard_total}")
+    print(f"[batch] {len(rows)} jobs for worker {args.shard_index + 1}/{args.shard_total}")
 
     success = 0
     for row in rows:
-        try:
-            if run_pipeline_for_row(row, args.output_dir, args.speaker_wav, args.dry_run):
-                success += 1
-        except subprocess.TimeoutExpired as e:
-            print(f"[ERROR] {row.get('video_id')}: timeout — {e}", file=sys.stderr)
-        except Exception as e:
-            print(f"[ERROR] {row.get('video_id')}: {e}", file=sys.stderr)
+        if run_pipeline_for_row(row, args.output_dir, args.speaker_wav, args.dry_run):
+            success += 1
 
-    print(f"\n[FINISHED] {success}/{len(rows)} videos processed.")
+    print(f"[batch] FINISHED {success}/{len(rows)}")
     return 0 if success == len(rows) else 1
 
 
