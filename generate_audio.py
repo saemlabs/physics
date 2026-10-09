@@ -1,15 +1,5 @@
 """
 generate_audio.py — XTTS-v2 voice synthesis + ambient background pad.
-
-Features & Optimizations
-------------------------
-  * Speaker embedding cached after first extraction (up to 3x speedup).
-  * Per-row seed derived from video_id for reproducible WAV generation.
-  * Native language mapping via row['language'] (defaults to "en").
-  * In-place resampling to canonical 22050 Hz via scipy (no extra dependencies).
-  * Graceful CUDA OOM failover to CPU rendering.
-  * Integrated loudness-matched low-pass ambient background pad.
-  * Fully compatible with batch_runner.py and render_universal.py.
 """
 
 from __future__ import annotations
@@ -27,14 +17,11 @@ from TTS.api import TTS
 os.environ.setdefault("COQUI_TOS_AGREED", "1")
 
 CANONICAL_SR = 22050
-TARGET_PAD_DB = -34.0  # Integrated loudness target for the pad
+TARGET_PAD_DB = -34.0
 _TTS_MODEL: TTS | None = None
-_SPEAKER_LATENT: tuple | None = None  # Cached tuple: (gpt_cond_latent, speaker_embedding)
+_SPEAKER_LATENT: tuple | None = None
 
 
-# -----------------------------------------------------------------------------
-# Model & Latent Caching
-# -----------------------------------------------------------------------------
 def get_tts_model(use_gpu: bool | None = None) -> TTS:
     global _TTS_MODEL
     if _TTS_MODEL is None:
@@ -49,7 +36,6 @@ def get_tts_model(use_gpu: bool | None = None) -> TTS:
 
 
 def _get_speaker_latent(tts: TTS, speaker_wav: str) -> tuple:
-    """Compute the speaker conditioning latent once and cache it in memory."""
     global _SPEAKER_LATENT
     if _SPEAKER_LATENT is None:
         print(f"[TTS] Computing speaker latent from '{speaker_wav}'...")
@@ -60,9 +46,6 @@ def _get_speaker_latent(tts: TTS, speaker_wav: str) -> tuple:
     return _SPEAKER_LATENT
 
 
-# -----------------------------------------------------------------------------
-# Text & Duration Utilities
-# -----------------------------------------------------------------------------
 def clean_audio_text(text: str) -> str:
     if not text:
         return ""
@@ -75,19 +58,16 @@ def clean_audio_text(text: str) -> str:
 
 
 def _seed_from_id(vid_id: str) -> int:
-    """Generate a stable 32-bit integer seed from the video_id string."""
     h = hashlib.sha256(vid_id.encode("utf-8")).hexdigest()
     return int(h[:8], 16)
 
 
 def get_wav_duration(path: str | Path) -> float:
-    """Soundfile-based duration calculation compatible with float/stereo WAVs."""
     info = sf.info(str(path))
     return float(info.frames) / float(info.samplerate)
 
 
 def _resample_to_canonical(path: str | Path):
-    """In-place resampling to CANONICAL_SR using scipy (avoids librosa dependency)."""
     data, sr = sf.read(str(path))
     if sr != CANONICAL_SR:
         gcd = np.gcd(sr, CANONICAL_SR)
@@ -97,15 +77,11 @@ def _resample_to_canonical(path: str | Path):
         sf.write(str(path), resampled.astype(np.float32), CANONICAL_SR, subtype='PCM_16')
 
 
-# -----------------------------------------------------------------------------
-# Ambient Pad Generation
-# -----------------------------------------------------------------------------
 def create_ambient_pad(
     voice_path: str | Path,
     output_pad_path: str | Path,
     target_gain_db: float = TARGET_PAD_DB
 ):
-    """Generates low-pass filtered white noise, RMS-matched to target dB."""
     data, sr = sf.read(str(voice_path))
     n = len(data) if data.ndim == 1 else data.shape[0]
 
@@ -123,9 +99,6 @@ def create_ambient_pad(
     sf.write(str(output_pad_path), noise.astype(np.float32), sr, subtype='PCM_16')
 
 
-# -----------------------------------------------------------------------------
-# Public API
-# -----------------------------------------------------------------------------
 def synthesize_audio_for_row(
     row: dict,
     speaker_wav: str = "saem_voice_sample.wav",
@@ -150,7 +123,6 @@ def synthesize_audio_for_row(
     print(f"[TTS] Synthesizing '{vid_id}' (lang={language}, seed={seed})")
     tts = get_tts_model()
 
-    # Reproducible sampling seeds for both CPU and CUDA
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
@@ -171,7 +143,6 @@ def synthesize_audio_for_row(
             split_sentences=True,
         )
     except RuntimeError as e:
-        # GPU OOM failover to CPU rendering
         if "cuda out of memory" in str(e).lower() or "cuda" in str(e).lower():
             print("[TTS] CUDA Out Of Memory detected. Retrying synthesis on CPU...")
             global _TTS_MODEL, _SPEAKER_LATENT
