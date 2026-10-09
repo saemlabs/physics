@@ -1,5 +1,5 @@
 """
-render_universal.py — Master 3b1b Manim rendering engine (v2.1).
+render_universal.py — Master 3b1b Manim rendering engine (v2.2).
 """
 
 from __future__ import annotations
@@ -85,6 +85,14 @@ def format_latex_option(opt_text: str) -> str:
     opt_text = clean_str(opt_text)
     if not opt_text:
         return ""
+    m = re.match(r"^(\([A-Da-d]\))\s*(.*)$", opt_text)
+    if m:
+        label, rest = m.group(1), m.group(2)
+        if not rest:
+            return r"\text{" + label + r"}"
+        if re.search(r"[\$\\_^{}]", rest):
+            return r"\text{" + label + r" }" + rest
+        return r"\text{" + label + r" " + rest + r"}"
     if not re.search(r"[\$\\_^{}]", opt_text):
         return r"\text{" + opt_text + r"}"
     return opt_text
@@ -271,7 +279,7 @@ class UniversalPhysicsScene(Scene):
 
         eq_card = self.draw_math_card(self.equations, y_center=ZONE_EQUATIONS)
 
-        visual_group = self._build_visual_group(visual_json_str)
+        visual_group, pending_rotations = self._build_visual_group(visual_json_str)
         visual_group.move_to([0, ZONE_VISUAL, 0])
         if visual_group.height > 4.0:
             visual_group.scale_to_fit_height(4.0)
@@ -281,6 +289,11 @@ class UniversalPhysicsScene(Scene):
         step = max(1.0, (audio_duration - 5.0) / 4.0)
         self.play(FadeIn(question, shift=UP * 0.2), run_time=0.8)
         self.play(FadeIn(visual_group), run_time=1.2)
+        
+        for mob, angle, pivot in pending_rotations:
+            shifted_pivot = mob.get_center() if pivot is None else (pivot + (visual_group.get_center() - ORIGIN))
+            self.play(Rotate(mob, angle=angle, about_point=shifted_pivot), run_time=1.2)
+
         self.wait(step)
         self.play(FadeIn(options_grid, shift=UP * 0.15), run_time=0.8)
         self.wait(step * 0.5)
@@ -346,23 +359,21 @@ class UniversalPhysicsScene(Scene):
                   Circumscribe(ans_box, color=COLOR_ACCENT, buff=0.1, run_time=1.0))
 
     def build_dynamic_json_scene(self, visual_json_str: str, audio_duration: float):
-        group = self._build_visual_group(visual_json_str)
+        group, pending_rotations = self._build_visual_group(visual_json_str)
         group.move_to([0, ZONE_VISUAL - 0.5, 0])
         self.play(FadeIn(group), run_time=1.2)
-        self._play_pending_animations()
+        
+        for mob, angle, pivot in pending_rotations:
+            shifted_pivot = mob.get_center() if pivot is None else (pivot + (group.get_center() - ORIGIN))
+            self.play(Rotate(mob, angle=angle, about_point=shifted_pivot), run_time=1.2)
 
         card = self.draw_math_card(self.equations, y_center=ZONE_EQUATIONS)
         if len(card) > 0:
             self.play(FadeIn(card[0]), Write(card[1]), run_time=1.0)
 
-    def _play_pending_animations(self):
-        for anim in getattr(self, "_pending_animations", []):
-            self.play(anim, run_time=1.5, rate_func=smooth)
-        self._pending_animations = []
-
-    def _build_visual_group(self, visual_json_str: str) -> VGroup:
+    def _build_visual_group(self, visual_json_str: str) -> tuple[VGroup, list[tuple]]:
         elements = parse_json_list(visual_json_str)
-        self._pending_animations = []
+        pending_rotations = []
         group = VGroup()
 
         for idx, item in enumerate(elements):
@@ -374,12 +385,12 @@ class UniversalPhysicsScene(Scene):
             group.add(mob)
 
             anim = item.get("animate")
-            if anim == "rotate" and item.get("pivot") is not None:
-                pivot = np.array(item["pivot"], dtype=float)
+            if anim == "rotate":
                 angle = float(item.get("rotate_angle", 45)) * DEGREES
-                self._pending_animations.append(Rotate(mob, angle=angle, about_point=pivot))
+                pivot = np.array(item["pivot"], dtype=float) if item.get("pivot") is not None else None
+                pending_rotations.append((mob, angle, pivot))
 
-        return group
+        return group, pending_rotations
 
     def _build_json_element(self, item: dict, idx: int) -> Mobject | None:
         e_type = str(item.get("type", "")).lower()
