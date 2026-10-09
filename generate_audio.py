@@ -1,42 +1,47 @@
+#!/usr/bin/env python3
 """
-generate_audio.py — XTTS-v2 voice synthesis + ambient background pad.
+generate_audio.py — Voice synthesis with XTTS-v2 primary + Edge-TTS fallback.
 
-Fixes in this version:
-  * Speaker latent cache keyed by wav path (was: single global slot)
-  * Explicit torch.inference_mode() prevents grad graph leaks
-  * reset_tts_model() helper for clean OOM fallback
+Fixes vs. previous version:
+  * TTS instantiated with `gpu=` kwarg (no more .to(device))
+  * TTS model cached at module level — one load per process
+  * Speaker latent cached per wav path
+  * CUDA OOM → CPU retry, then Edge-TTS fallback
+  * Edge-TTS output saved as MP3, transcoded to PCM WAV via ffmpeg
 """
 
 from __future__ import annotations
 
+import argparse
+import asyncio
 import hashlib
 import os
-from pathlib import Path
+import subprocess
+import sys
 
-import numpy as np
-import soundfile as sf
-import torch
-from scipy.signal import butter, lfilter, resample_poly
-
-from TTS.api import TTS
-
-os.environ.setdefault("COQUI_TOS_AGREED", "1")
+from soundscape import process_and_normalize_wav
 
 CANONICAL_SR = 44100
-TARGET_PAD_DB = -34.0
 
-_TTS_MODEL: TTS | None = None
-# cache keyed by speaker_wav path so changing samples between rows is safe
-_SPEAKER_LATENT: dict[str, tuple] = {}
+_TTS_MODEL = None
+_SPEAKER_LATENT: dict = {}
 
 
-# =================================================================== MODEL
-def get_tts_model(use_gpu: bool | None = None) -> TTS:
+# =================================================================== helpers
+def get_deterministic_seed(video_id: str) -> int:
+    h = hashlib.sha256(video_id.encode("utf-8")).hexdigest()
+    return int(h[:8], 16)
+
+
+def _get_tts(use_gpu: bool | None = None):
     global _TTS_MODEL
     if _TTS_MODEL is None:
+        import torch
+        from TTS.api import TTS
+
         if use_gpu is None:
             use_gpu = torch.cuda.is_available()
-        print(f"[TTS] Loading XTTS-v2 (GPU={use_gpu})...")
+        print(f"[TTS] Loading XTTS-v2 (GPU={use_gpu})", file=sys.stderr)
         _TTS_MODEL = TTS(
             "tts_models/multilingual/multi-dataset/xtts_v2",
             gpu=use_gpu,
@@ -44,154 +49,139 @@ def get_tts_model(use_gpu: bool | None = None) -> TTS:
     return _TTS_MODEL
 
 
-def reset_tts_model() -> None:
-    """Wipe the model and latent cache — used when CUDA runs out of memory."""
+def _reset_tts():
     global _TTS_MODEL, _SPEAKER_LATENT
     _TTS_MODEL = None
     _SPEAKER_LATENT = {}
 
 
-def _get_speaker_latent(tts: TTS, speaker_wav: str) -> tuple:
-    key = str(Path(speaker_wav).resolve())
+def _get_speaker_latent(tts, speaker_wav: str):
+    key = os.path.abspath(speaker_wav)
     if key not in _SPEAKER_LATENT:
-        print(f"[TTS] Computing speaker latent from '{speaker_wav}'...")
-        gpt_cond_latent, speaker_embedding = (
-            tts.synthesizer.tts_model.get_conditioning_latents(
-                audio_path=[speaker_wav]
-            )
+        gpt, emb = tts.synthesizer.tts_model.get_conditioning_latents(
+            audio_path=[speaker_wav]
         )
-        _SPEAKER_LATENT[key] = (gpt_cond_latent, speaker_embedding)
+        _SPEAKER_LATENT[key] = (gpt, emb)
     return _SPEAKER_LATENT[key]
 
 
-# =================================================================== TEXT
-def clean_audio_text(text: str) -> str:
-    if not text:
-        return ""
-    text = str(text).strip().strip('"\'').strip()
-    text = text.replace("\n", " ").replace("\r", " ")
-    text = " ".join(text.split())
-    if text and text[-1] not in ".!?":
-        text += "."
-    return text
-
-
-def _seed_from_id(vid_id: str) -> int:
-    h = hashlib.sha256(vid_id.encode("utf-8")).hexdigest()
-    return int(h[:8], 16)
-
-
-# =================================================================== AUDIO UTILS
-def get_wav_duration(path: str | Path) -> float:
-    info = sf.info(str(path))
-    return float(info.frames) / float(info.samplerate)
-
-
-def _resample_to_canonical(path: str | Path) -> None:
-    data, sr = sf.read(str(path))
-    if sr != CANONICAL_SR:
-        g = int(np.gcd(int(sr), CANONICAL_SR))
-        up = CANONICAL_SR // g
-        down = int(sr) // g
-        resampled = resample_poly(data, up, down, axis=0)
-        resampled = np.clip(resampled, -1.0, 1.0)
-        sf.write(str(path), resampled.astype(np.float32),
-                 CANONICAL_SR, subtype="PCM_16")
-
-
-def create_ambient_pad(voice_path: str | Path,
-                       output_pad_path: str | Path,
-                       target_gain_db: float = TARGET_PAD_DB) -> None:
-    data, sr = sf.read(str(voice_path))
-    n = len(data) if data.ndim == 1 else data.shape[0]
-
-    nyq = 0.5 * sr
-    cutoff = min(400.0, nyq - 1.0)
-    b, a = butter(2, cutoff / nyq, btype="low", analog=False)
-
-    rng = np.random.default_rng(42)
-    noise = lfilter(b, a, rng.normal(0, 1.0, n))
-
-    rms = float(np.sqrt(np.mean(noise ** 2) + 1e-12))
-    target_rms = 10 ** (target_gain_db / 20.0)
-    noise = (noise / rms) * target_rms
-    noise = np.clip(noise, -1.0, 1.0)
-
-    sf.write(str(output_pad_path), noise.astype(np.float32),
-             int(sr), subtype="PCM_16")
-
-
-# =================================================================== INFERENCE
-@torch.inference_mode()
-def _run_inference(tts: TTS, script: str, language: str,
-                   gpt_cond_latent, speaker_embedding) -> np.ndarray:
-    result = tts.synthesizer.tts_model.inference(
-        text=script,
-        language=language,
-        gpt_cond_latent=gpt_cond_latent,
-        speaker_embedding=speaker_embedding,
-        temperature=0.65,
-        speed=1.0,
-        repetition_penalty=3.0,
-        enable_text_splitting=True,
-    )
-    wav = result["wav"]
-    if isinstance(wav, torch.Tensor):
-        wav = wav.detach().cpu().numpy()
-    return np.asarray(wav, dtype=np.float32)
-
-
-# =================================================================== MAIN ENTRY
-def synthesize_audio_for_row(row: dict,
-                             speaker_wav: str = "saem_voice_sample.wav",
-                             output_dir: str = "."
-                             ) -> tuple[str, str, float]:
-    vid_id = (str(row.get("video_id") or "short_video")).strip() or "short_video"
-    out = Path(output_dir)
-    out.mkdir(parents=True, exist_ok=True)
-
-    voice_path = out / f"{vid_id}_voice.wav"
-    pad_path = out / f"{vid_id}_pad.wav"
-
-    script = clean_audio_text(row.get("audio_script", ""))
-    if not script:
-        raise ValueError(f"Audio script is missing for '{vid_id}'")
-    if not Path(speaker_wav).exists():
-        raise FileNotFoundError(f"Reference voice sample '{speaker_wav}' not found")
-
-    language = (str(row.get("language") or "en")).strip() or "en"
-    seed = _seed_from_id(vid_id)
-
-    print(f"[TTS] Synthesizing '{vid_id}' (lang={language}, seed={seed})")
-
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
-    np.random.seed(seed)
-
-    tts = get_tts_model()
-    gpt_cond_latent, speaker_embedding = _get_speaker_latent(tts, speaker_wav)
-
+# =================================================================== synthesis
+def synthesize_coqui(text: str, speaker_wav: str,
+                     output_wav: str, seed: int) -> bool:
     try:
-        wav_data = _run_inference(tts, script, language,
-                                  gpt_cond_latent, speaker_embedding)
-        sf.write(str(voice_path), wav_data, 24000, subtype="PCM_16")
+        import numpy as np
+        import soundfile as sf
+        import torch
+
+        torch.manual_seed(seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(seed)
+        np.random.seed(seed)
+
+        tts = _get_tts()
+        gpt, emb = _get_speaker_latent(tts, speaker_wav)
+
+        try:
+            result = tts.synthesizer.tts_model.inference(
+                text=text, language="en",
+                gpt_cond_latent=gpt, speaker_embedding=emb,
+                temperature=0.65, speed=1.0,
+                repetition_penalty=3.0,
+                enable_text_splitting=True,
+            )
+        except Exception as e:
+            if "cuda" in str(e).lower() or "out of memory" in str(e).lower():
+                print("[TTS] CUDA OOM — retrying on CPU", file=sys.stderr)
+                _reset_tts()
+                tts = _get_tts(use_gpu=False)
+                gpt, emb = _get_speaker_latent(tts, speaker_wav)
+                result = tts.synthesizer.tts_model.inference(
+                    text=text, language="en",
+                    gpt_cond_latent=gpt, speaker_embedding=emb,
+                    temperature=0.65, speed=1.0,
+                    repetition_penalty=3.0,
+                    enable_text_splitting=True,
+                )
+            else:
+                raise
+
+        wav = result["wav"]
+        if isinstance(wav, torch.Tensor):
+            wav = wav.detach().cpu().numpy()
+        wav = np.asarray(wav, dtype=np.float32)
+        sf.write(output_wav, wav, 24000, subtype="PCM_16")
+        return True
     except Exception as e:
-        msg = str(e).lower()
-        if "cuda" in msg or "out of memory" in msg:
-            print("[TTS] CUDA OOM — falling back to CPU synthesis...")
-            reset_tts_model()
-            tts = get_tts_model(use_gpu=False)
-            gpt_cond_latent, speaker_embedding = _get_speaker_latent(tts, speaker_wav)
-            wav_data = _run_inference(tts, script, language,
-                                      gpt_cond_latent, speaker_embedding)
-            sf.write(str(voice_path), wav_data, 24000, subtype="PCM_16")
-        else:
-            raise
+        print(f"[WARN] Coqui XTTS failed: {e}", file=sys.stderr)
+        return False
 
-    _resample_to_canonical(voice_path)
-    duration = get_wav_duration(voice_path)
-    create_ambient_pad(voice_path, pad_path)
 
-    print(f"[TTS] Completed '{vid_id}' | Voice duration: {duration:.2f}s")
-    return str(voice_path), str(pad_path), duration
+def synthesize_edge_tts(text: str, output_wav: str) -> bool:
+    """Edge-TTS produces MP3; transcode to PCM WAV via ffmpeg."""
+    temp_mp3 = output_wav + ".tmp.mp3"
+    try:
+        import edge_tts
+
+        async def _run():
+            communicate = edge_tts.Communicate(
+                text, "en-US-ChristopherNeural", rate="+0%"
+            )
+            await communicate.save(temp_mp3)
+
+        asyncio.run(_run())
+
+        subprocess.run(
+            [
+                "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+                "-i", temp_mp3,
+                "-acodec", "pcm_s16le",
+                "-ar", str(CANONICAL_SR),
+                "-ac", "1",
+                output_wav,
+            ],
+            check=True, timeout=120,
+        )
+        return True
+    except Exception as e:
+        print(f"[ERROR] Edge-TTS failed: {e}", file=sys.stderr)
+        return False
+    finally:
+        if os.path.exists(temp_mp3):
+            os.remove(temp_mp3)
+
+
+# =================================================================== main
+def main() -> int:
+    p = argparse.ArgumentParser(description="Voice synthesis engine.")
+    p.add_argument("--video_id", required=True)
+    p.add_argument("--script", required=True)
+    p.add_argument("--speaker_wav", default="saem_voice_sample.wav")
+    p.add_argument("--output", required=True)
+    args = p.parse_args()
+
+    seed = get_deterministic_seed(args.video_id)
+    raw_wav = args.output + ".raw.wav"
+
+    success = False
+    if os.path.exists(args.speaker_wav):
+        success = synthesize_coqui(args.script, args.speaker_wav, raw_wav, seed)
+
+    if not success:
+        print("[INFO] Falling back to Edge-TTS", file=sys.stderr)
+        success = synthesize_edge_tts(args.script, raw_wav)
+
+    if not success or not os.path.exists(raw_wav):
+        print(f"[FATAL] Audio synthesis failed for {args.video_id}", file=sys.stderr)
+        return 1
+
+    process_and_normalize_wav(raw_wav, args.output)
+
+    if os.path.exists(raw_wav):
+        os.remove(raw_wav)
+
+    print(f"[SUCCESS] Audio generated: {args.output}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
