@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-generate_audio.py — Voice synthesis with XTTS-v2 primary + Edge-TTS fallback.
+generate_audio.py — Voice cloning with XTTS-v2 + Edge-TTS fallback.
 
-Fixes vs. previous version:
-  * TTS instantiated with `gpu=` kwarg (no more .to(device))
-  * TTS model cached at module level — one load per process
-  * Speaker latent cached per wav path
-  * CUDA OOM → CPU retry, then Edge-TTS fallback
-  * Edge-TTS output saved as MP3, transcoded to PCM WAV via ffmpeg
+Synthesis params tuned for Feynman-style narration:
+  * temperature=0.70      (a touch of warmth; 0.65 is fine, 0.85 too wild)
+  * speed=0.95            (deliberate, lecturer-paced; not hurried)
+  * repetition_penalty=5.0(prevents the model from looping a phrase)
+  * top_k=50, top_p=0.85  (natural sampling, avoids monotone)
+  * enable_text_splitting (handles long scripts without truncation)
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ import os
 import subprocess
 import sys
 
-from soundscape import process_and_normalize_wav
+from soundscape import master_voice
 
 CANONICAL_SR = 44100
 
@@ -31,6 +31,24 @@ _SPEAKER_LATENT: dict = {}
 def get_deterministic_seed(video_id: str) -> int:
     h = hashlib.sha256(video_id.encode("utf-8")).hexdigest()
     return int(h[:8], 16)
+
+
+def _validate_reference(speaker_wav: str) -> None:
+    """Warn (not fail) if the reference sample is suboptimal."""
+    try:
+        import soundfile as sf
+        info = sf.info(speaker_wav)
+        dur = info.frames / float(info.samplerate)
+        if dur < 6.0:
+            print(f"[WARN] Reference '{speaker_wav}' is {dur:.1f}s — "
+                  f"XTTS wants 10-30s for a stable clone.", file=sys.stderr)
+        if dur > 60.0:
+            print(f"[WARN] Reference '{speaker_wav}' is {dur:.1f}s — "
+                  f"trimming to 30s is recommended.", file=sys.stderr)
+        if info.channels > 1:
+            print(f"[INFO] Reference is stereo; XTTS will downmix.", file=sys.stderr)
+    except Exception as e:
+        print(f"[WARN] Could not inspect reference: {e}", file=sys.stderr)
 
 
 def _get_tts(use_gpu: bool | None = None):
@@ -58,6 +76,7 @@ def _reset_tts():
 def _get_speaker_latent(tts, speaker_wav: str):
     key = os.path.abspath(speaker_wav)
     if key not in _SPEAKER_LATENT:
+        print(f"[TTS] Computing speaker latent from '{speaker_wav}'", file=sys.stderr)
         gpt, emb = tts.synthesizer.tts_model.get_conditioning_latents(
             audio_path=[speaker_wav]
         )
@@ -81,27 +100,29 @@ def synthesize_coqui(text: str, speaker_wav: str,
         tts = _get_tts()
         gpt, emb = _get_speaker_latent(tts, speaker_wav)
 
-        try:
-            result = tts.synthesizer.tts_model.inference(
-                text=text, language="en",
-                gpt_cond_latent=gpt, speaker_embedding=emb,
-                temperature=0.65, speed=1.0,
-                repetition_penalty=3.0,
+        def _infer():
+            return tts.synthesizer.tts_model.inference(
+                text=text,
+                language="en",
+                gpt_cond_latent=gpt,
+                speaker_embedding=emb,
+                temperature=0.70,
+                speed=0.95,
+                repetition_penalty=5.0,
+                top_k=50,
+                top_p=0.85,
                 enable_text_splitting=True,
             )
+
+        try:
+            result = _infer()
         except Exception as e:
             if "cuda" in str(e).lower() or "out of memory" in str(e).lower():
                 print("[TTS] CUDA OOM — retrying on CPU", file=sys.stderr)
                 _reset_tts()
                 tts = _get_tts(use_gpu=False)
                 gpt, emb = _get_speaker_latent(tts, speaker_wav)
-                result = tts.synthesizer.tts_model.inference(
-                    text=text, language="en",
-                    gpt_cond_latent=gpt, speaker_embedding=emb,
-                    temperature=0.65, speed=1.0,
-                    repetition_penalty=3.0,
-                    enable_text_splitting=True,
-                )
+                result = _infer()
             else:
                 raise
 
@@ -117,19 +138,18 @@ def synthesize_coqui(text: str, speaker_wav: str,
 
 
 def synthesize_edge_tts(text: str, output_wav: str) -> bool:
-    """Edge-TTS produces MP3; transcode to PCM WAV via ffmpeg."""
     temp_mp3 = output_wav + ".tmp.mp3"
     try:
         import edge_tts
 
         async def _run():
+            # ChristopherNeural: warm, male, closest to Feynman's cadence
             communicate = edge_tts.Communicate(
-                text, "en-US-ChristopherNeural", rate="+0%"
+                text, "en-US-ChristopherNeural", rate="-3%"
             )
             await communicate.save(temp_mp3)
 
         asyncio.run(_run())
-
         subprocess.run(
             [
                 "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
@@ -157,13 +177,16 @@ def main() -> int:
     p.add_argument("--script", required=True)
     p.add_argument("--speaker_wav", default="saem_voice_sample.wav")
     p.add_argument("--output", required=True)
+    p.add_argument("--force-edge", action="store_true",
+                   help="Skip XTTS, use Edge-TTS only")
     args = p.parse_args()
 
     seed = get_deterministic_seed(args.video_id)
     raw_wav = args.output + ".raw.wav"
 
     success = False
-    if os.path.exists(args.speaker_wav):
+    if not args.force_edge and os.path.exists(args.speaker_wav):
+        _validate_reference(args.speaker_wav)
         success = synthesize_coqui(args.script, args.speaker_wav, raw_wav, seed)
 
     if not success:
@@ -174,12 +197,12 @@ def main() -> int:
         print(f"[FATAL] Audio synthesis failed for {args.video_id}", file=sys.stderr)
         return 1
 
-    process_and_normalize_wav(raw_wav, args.output)
+    master_voice(raw_wav, args.output)
 
     if os.path.exists(raw_wav):
         os.remove(raw_wav)
 
-    print(f"[SUCCESS] Audio generated: {args.output}")
+    print(f"[SUCCESS] Mastered audio: {args.output}")
     return 0
 
 
