@@ -20,7 +20,7 @@ concurrency:
 
 jobs:
   # ------------------------------------------------------------------
-  # Job 1 — Fast structural validation using standard Python library
+  # Job 1 — Pre-flight Structural Validation
   # ------------------------------------------------------------------
   validate:
     runs-on: ubuntu-latest
@@ -66,7 +66,7 @@ jobs:
           "
 
   # ------------------------------------------------------------------
-  # Job 2 — Parallel matrix rendering across 4 CPU shards (Python 3.11)
+  # Job 2 — Parallel Matrix Render (Python 3.11 CPU Runners)
   # ------------------------------------------------------------------
   batch_render:
     needs: validate
@@ -141,7 +141,7 @@ jobs:
           retention-days: 14
 
   # ------------------------------------------------------------------
-  # Job 3 — Merge chunk artifacts into a single output bundle
+  # Job 3 — Merge Artifacts
   # ------------------------------------------------------------------
   merge_artifacts:
     needs: batch_render
