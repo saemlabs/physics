@@ -1,11 +1,12 @@
 """
 batch_runner.py — Subprocess orchestrator & FFmpeg stitcher.
 
-Fixes vs previous version:
-  * Explicit --resolution 1080,1920 (portrait). No -qh flag.
-  * Stale-render detection via mtime filtering.
-  * alimiter after amix to prevent clipping.
-  * faststart MP4 for web playback.
+Fixes in this version:
+  * Explicit --resolution 1080,1920 (portrait) — no more -qh landscape
+  * Env var length guard for BEATS_JSON / BINDINGS_JSON
+  * Stale-render detection via mtime
+  * alimiter prevents audio clipping after amix
+  * faststart MP4 for web playback
 """
 
 from __future__ import annotations
@@ -34,6 +35,8 @@ FPS = 30
 FFMPEG_PRESET = "veryfast"
 FFMPEG_CRF = "20"
 
+ENV_VAR_MAX_BYTES = 100_000    # safe margin under Linux 128KB limit
+
 ENV_WHITELIST = {
     "PATH", "HOME", "USER", "LANG", "LC_ALL", "TERM",
     "PYTHONPATH", "PYTHONUNBUFFERED", "TMPDIR",
@@ -42,6 +45,7 @@ ENV_WHITELIST = {
     "QUESTION_TEXT", "OPTION_A", "OPTION_B", "OPTION_C", "OPTION_D",
     "CORRECT_ANSWER", "EQUATIONS_JSON", "VISUAL_DATA_JSON",
     "AUDIO_DURATION", "SAFE_MODE", "HINDI_FONT", "SCENE_STYLE",
+    "BEATS_JSON", "BINDINGS_JSON",
 }
 
 
@@ -59,7 +63,13 @@ def build_row_env(row: dict, audio_duration: float) -> dict:
     env = {k: v for k, v in os.environ.items() if k in ENV_WHITELIST}
     for k, v in row.items():
         if k and v is not None:
-            env[k.strip().upper()] = str(v).strip()
+            key = k.strip().upper()
+            val = str(v).strip()
+            # guard against env var overflow (Linux limit ~128KB)
+            if len(val.encode("utf-8")) > ENV_VAR_MAX_BYTES:
+                print(f"  ! WARNING: env var {key} exceeds {ENV_VAR_MAX_BYTES} bytes; skipping")
+                continue
+            env[key] = val
     env["AUDIO_DURATION"] = f"{audio_duration:.3f}"
     env["SAFE_MODE"] = env.get("SAFE_MODE", "1")
     env["SCENE_STYLE"] = env.get("SCENE_STYLE", "cinematic")
@@ -155,7 +165,8 @@ def process_batch() -> None:
 
         if args.dry_run:
             print(f"[{idx}/{total}] DRY RUN  {vid_id}  ({concept})")
-            runlog.append({"video_id": vid_id, "status": "dry_run", "concept_type": concept})
+            runlog.append({"video_id": vid_id, "status": "dry_run",
+                           "concept_type": concept})
             continue
 
         print(f"[{idx}/{total}] BUILD {vid_id}  ({concept})")
@@ -164,7 +175,8 @@ def process_batch() -> None:
         for attempt in range(1, args.retries + 2):
             try:
                 _render_one(row, vid_id, final_output)
-                runlog.append({"video_id": vid_id, "status": "ok", "attempt": attempt})
+                runlog.append({"video_id": vid_id, "status": "ok",
+                               "attempt": attempt})
                 last_err = None
                 break
             except Exception as e:
@@ -174,18 +186,15 @@ def process_batch() -> None:
                     time.sleep(2 ** attempt)
 
         if last_err is not None:
-            runlog.append({
-                "video_id": vid_id,
-                "status": "error",
-                "error": f"{type(last_err).__name__}: {last_err}",
-            })
+            runlog.append({"video_id": vid_id, "status": "error",
+                           "error": f"{type(last_err).__name__}: {last_err}"})
             traceback.print_exc()
 
     if args.log_file:
         Path(args.log_file).parent.mkdir(parents=True, exist_ok=True)
-        Path(args.log_file).write_text(json.dumps(runlog, indent=2), encoding="utf-8")
+        Path(args.log_file).write_text(json.dumps(runlog, indent=2),
+                                       encoding="utf-8")
 
-    # cleanup temp audio if empty
     if TEMP_AUDIO.exists() and not any(TEMP_AUDIO.iterdir()):
         TEMP_AUDIO.rmdir()
 
@@ -215,7 +224,9 @@ def _render_one(row: dict, vid_id: str, final_output: Path) -> None:
 
         raw_video = find_rendered_file(vid_id, min_mtime=t0)
         if raw_video is None:
-            raise FileNotFoundError(f"Render output '{vid_id}.mp4' not found under {MEDIA_DIR}/")
+            raise FileNotFoundError(
+                f"Render output '{vid_id}.mp4' not found under {MEDIA_DIR}/"
+            )
 
         print("  [FFmpeg] Stitching audio/video...")
         stitch_av(raw_video, Path(voice), Path(pad), final_output)
