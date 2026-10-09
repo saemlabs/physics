@@ -1,8 +1,19 @@
 """
 manim_fx.py — Motion vocabulary for cinematic physics shorts.
 
-Every helper guarantees *continuous* motion; no scene should ever sit frozen.
+Every helper guarantees continuous motion; no scene should ever sit frozen.
 Compatible with manim==0.18.1, numpy==1.26.4, Python 3.11.
+
+Public API:
+    Palette          : PALETTE, SEMANTIC, resolve_color
+    Rate functions   : RF_SOFT, RF_SPRING, RF_SNAP, RF_LINEAR
+    Motion primitives: live_wait, idle_float, pulse_loop
+    Entrances        : pop_in, staggered_reveal, card_reveal, grow_in
+    Emphasis         : glow_pulse, underline_brace, highlight_bound
+    Graphs           : traced_graph, value_counter
+    Equations        : morph_equations, color_code_equation, color_code_terms
+    Camera           : CameraDirector
+    Transitions      : wipe_transition
 """
 
 from __future__ import annotations
@@ -26,6 +37,34 @@ PALETTE = {
     "warn":   "#E67E22",
 }
 
+# Semantic palette — a concept gets the SAME color across all videos.
+# JSON elements declare `"semantic": "force"` instead of a hard-coded hex.
+SEMANTIC = {
+    "force":    PALETTE["field"],     # blue    → force / field
+    "energy":   PALETTE["accent"],    # yellow  → energy / work / heat
+    "mass":     PALETTE["white"],
+    "charge":   PALETTE["pos"],       # red     → positive charge
+    "field":    PALETTE["field"],
+    "velocity": PALETTE["force"],     # green   → velocity / momentum flow
+    "position": PALETTE["accent"],
+    "momentum": PALETTE["warn"],
+    "accent":   PALETTE["accent"],
+    "muted":    PALETTE["muted"],
+}
+
+
+def resolve_color(item: dict | None) -> str:
+    """Resolve a JSON element's color. Prefers `semantic`, falls back to `color`."""
+    if not isinstance(item, dict):
+        return PALETTE["accent"]
+    if "semantic" in item:
+        key = str(item["semantic"]).lower().strip()
+        if key in SEMANTIC:
+            return SEMANTIC[key]
+    return item.get("color", PALETTE["accent"])
+
+
+# =================================================================== RATE FUNCTIONS
 RF_SOFT   = rate_functions.ease_in_out_sine
 RF_SPRING = rate_functions.ease_out_back
 RF_SNAP   = rate_functions.ease_out_cubic
@@ -54,13 +93,23 @@ def _safe_remove_updaters(mob: Mobject) -> None:
             _safe_remove_updaters(sub)
 
 
+def _attach_semantic(mob: Mobject, color_hex: str) -> None:
+    """Attach a metadata attribute for later binding-based coloring."""
+    try:
+        mob._semantic_color = color_hex
+    except Exception:
+        pass
+
+
 # =================================================================== MOTION
-def live_wait(scene: Scene, duration: float, mobs: list[Mobject] | None = None,
-              breathe_scale: float = 0.012, max_targets: int = 6) -> None:
+def live_wait(scene: Scene, duration: float,
+              mobs: list[Mobject] | None = None,
+              breathe_scale: float = 0.012,
+              max_targets: int = 6) -> None:
     """
-    Replacement for scene.wait(N). Keeps `mobs` (or everything currently
-    in the scene) subtly breathing while time passes. Automatically skips
-    mobs that own their own updaters (e.g. always_redraw).
+    Replacement for scene.wait(N). Keeps `mobs` (or everything currently in
+    the scene) subtly breathing while time passes. Automatically skips mobs
+    that own their own updaters (always_redraw etc.).
     """
     if duration <= 0.05:
         return
@@ -122,10 +171,12 @@ def idle_float(scene: Scene, mob: Mobject, duration: float,
 
 def pulse_loop(scene: Scene, mob: Mobject, cycles: int = 2,
                scale: float = 1.05, cycle_time: float = 0.6) -> None:
-    """Discrete scale pulses — good for emphasis without freezing."""
-    for _ in range(cycles):
-        scene.play(mob.animate.scale(scale), run_time=cycle_time / 2, rate_func=RF_SOFT)
-        scene.play(mob.animate.scale(1 / scale), run_time=cycle_time / 2, rate_func=RF_SOFT)
+    """Discrete scale pulses — emphasis without freezing."""
+    for _ in range(max(1, cycles)):
+        scene.play(mob.animate.scale(scale),
+                   run_time=cycle_time / 2, rate_func=RF_SOFT)
+        scene.play(mob.animate.scale(1 / scale),
+                   run_time=cycle_time / 2, rate_func=RF_SOFT)
 
 
 # =================================================================== ENTRANCES
@@ -142,6 +193,8 @@ def staggered_reveal(scene: Scene, group: VGroup, run_time: float = 1.2,
     """Lagged fade-in. Adaptive lag keeps large groups within time budget."""
     if direction is None:
         direction = DOWN
+    if len(group) == 0:
+        return
     n = max(1, len(group))
     lag = min(0.30, 1.6 / n)
     scene.play(
@@ -167,7 +220,8 @@ def card_reveal(scene: Scene, card: VGroup, run_time: float = 1.0) -> None:
     scene.play(Write(content, rate_func=smooth), run_time=run_time * 0.70)
 
 
-def grow_in(scene: Scene, mob: Mobject, direction: np.ndarray | None = None,
+def grow_in(scene: Scene, mob: Mobject,
+            direction: np.ndarray | None = None,
             run_time: float = 0.5) -> None:
     """Directional entrance for arrows / lines."""
     if direction is None:
@@ -178,7 +232,8 @@ def grow_in(scene: Scene, mob: Mobject, direction: np.ndarray | None = None,
 
 
 # =================================================================== EMPHASIS
-def glow_pulse(scene: Scene, mob: Mobject, color=None, run_time: float = 0.9) -> None:
+def glow_pulse(scene: Scene, mob: Mobject, color=None,
+               run_time: float = 0.9) -> None:
     color = color or PALETTE["accent"]
     scene.play(Indicate(mob, color=color, scale_factor=1.12), run_time=run_time)
 
@@ -197,22 +252,36 @@ def underline_brace(scene: Scene, mob: Mobject, label,
     return group
 
 
-def arrow_follow(scene: Scene, follower: Mobject, path_mob: Mobject,
-                 duration: float, keep_path: bool = True) -> None:
-    """A dot (or any mob) travels along a path."""
-    if not keep_path:
-        scene.play(MoveAlongPath(follower, path_mob), run_time=duration,
-                   rate_func=RF_LINEAR)
-    else:
-        scene.play(MoveAlongPath(follower, path_mob), run_time=duration,
-                   rate_func=RF_LINEAR)
+def highlight_bound(scene: Scene, eq_submob, visual_mob, color=None,
+                    run_time: float = 0.9) -> None:
+    """
+    3b1b's signature move: when the narrator says a word, BOTH the equation
+    term AND its visual counterpart pulse in sync. Binds abstract symbols
+    to concrete pictures.
+    """
+    color = color or PALETTE["accent"]
+    anims = []
+    if eq_submob is not None:
+        try:
+            anims.append(Indicate(eq_submob, color=color, scale_factor=1.20))
+        except Exception:
+            pass
+    if visual_mob is not None:
+        try:
+            anims.append(Indicate(visual_mob, color=color, scale_factor=1.15))
+        except Exception:
+            pass
+    if anims:
+        scene.play(*anims, run_time=run_time)
 
 
 # =================================================================== GRAPHS
 def traced_graph(scene: Scene, axes: Axes, fn, x_range,
                  color=None, duration: float = 2.4,
-                 dot_color=None, show_tangent_at: float | None = None,
-                 show_axes: bool = True) -> tuple[Mobject, Mobject, ValueTracker]:
+                 dot_color=None,
+                 show_tangent_at: float | None = None,
+                 show_axes: bool = True
+                 ) -> tuple[Mobject, Mobject, ValueTracker]:
     """
     Draw a graph progressively while a dot rides the curve.
     Returns (graph, dot, tracker) so caller can keep the tracker alive.
@@ -232,8 +301,8 @@ def traced_graph(scene: Scene, axes: Axes, fn, x_range,
     tracker = ValueTracker(x0)
 
     def _dot_update(m, tr=tracker, ax=axes, f=fn):
-        x = tr.get_value()
         try:
+            x = tr.get_value()
             m.move_to(ax.c2p(x, f(x)))
         except Exception:
             pass
@@ -291,11 +360,28 @@ def morph_equations(scene: Scene, eq_a: Mobject, eq_b: Mobject,
 
 
 def color_code_equation(eq: MathTex, mapping: dict[int, str]) -> None:
+    """Color specific submobjects of a MathTex by index."""
     for idx, hexcol in mapping.items():
         try:
             eq[0][idx].set_color(hexcol)
         except Exception:
             pass
+
+
+def color_code_terms(equation_mobs: list, bindings: dict,
+                     visuals_by_id: dict) -> None:
+    """
+    Permanently color equation sub-terms to match their bound visual's
+    semantic color. Call once at `law` beat reveal.
+    """
+    for visual_id, terms in bindings.items():
+        vis = visuals_by_id.get(visual_id)
+        vis_color = getattr(vis, "_semantic_color", PALETTE["accent"])
+        for eq_idx, term_idx in terms:
+            try:
+                equation_mobs[eq_idx][0][term_idx].set_color(vis_color)
+            except Exception:
+                pass
 
 
 # =================================================================== CAMERA
@@ -305,8 +391,9 @@ class CameraDirector:
     def __init__(self, scene: Scene):
         self.s = scene
 
-    def zoom(self, factor: float, run_time: float = 1.2, center=None) -> None:
-        """Chain set(width) + move_to on a single builder — avoids concurrent-build conflict."""
+    def zoom(self, factor: float, run_time: float = 1.2,
+             center=None) -> None:
+        """Chain set(width) + move_to on a single builder."""
         frame = self.s.camera.frame
         target_width = frame.get_width() / factor
         builder = frame.animate.set(width=target_width)
@@ -327,7 +414,8 @@ class CameraDirector:
 
 
 # =================================================================== TRANSITIONS
-def wipe_transition(scene: Scene, direction: np.ndarray | None = None,
+def wipe_transition(scene: Scene,
+                    direction: np.ndarray | None = None,
                     run_time: float = 0.35) -> None:
     """Quick visual wipe between narrative beats."""
     if direction is None:
