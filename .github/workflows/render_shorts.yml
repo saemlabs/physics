@@ -2,53 +2,91 @@ name: Bulk Render Physics Shorts
 
 on:
   push:
-    branches:
-      - main
-    paths-ignore:
-      - '**.md'
-      - '.gitignore'
-      - 'LICENSE'
+    branches: [main]
+    paths-ignore: ['**.md', '.gitignore', 'LICENSE']
+  pull_request:
+    branches: [main]
+    paths-ignore: ['**.md', '.gitignore', 'LICENSE']
   workflow_dispatch:
+    inputs:
+      retries:
+        description: 'Number of retries per video on failure'
+        required: false
+        default: '2'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
+  # ------------------------------------------------------------------
+  # Job 1 — Fast structural validation using standard Python library
+  # ------------------------------------------------------------------
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Pre-flight File Existence Check
+        run: |
+          test -f content_batch.csv       || { echo "::error::content_batch.csv missing"; exit 1; }
+          test -f saem_voice_sample.wav   || { echo "::error::saem_voice_sample.wav missing"; exit 1; }
+          test -f render_universal.py     || { echo "::error::render_universal.py missing"; exit 1; }
+          test -f batch_runner.py         || { echo "::error::batch_runner.py missing"; exit 1; }
+          test -f generate_audio.py       || { echo "::error::generate_audio.py missing"; exit 1; }
+
+      - name: Validate CSV & JSON Integrity
+        run: |
+          python3 -c "
+          import csv, json, sys
+
+          with open('content_batch.csv', mode='r', encoding='utf-8') as f:
+              reader = list(csv.DictReader(f))
+              if not reader:
+                  print('::error::content_batch.csv is empty'); sys.exit(1)
+              
+              req_headers = {'video_id', 'concept_type', 'header_title', 'equations_json', 'visual_data_json', 'audio_script'}
+              missing = req_headers - set(reader[0].keys())
+              if missing:
+                  print(f'::error::Missing required headers: {missing}'); sys.exit(1)
+
+              for idx, row in enumerate(reader, 1):
+                  vid = row.get('video_id', f'row_{idx}')
+                  for col in ('equations_json', 'visual_data_json'):
+                      val = row.get(col, '')
+                      if val:
+                          try:
+                              parsed = json.loads(val)
+                              if isinstance(parsed, str): json.loads(parsed)
+                          except Exception as e:
+                              print(f'::error::Row {idx} ({vid}) column {col} invalid JSON: {e}')
+                              sys.exit(1)
+          print('CSV and JSON structures validated successfully!')
+          "
+
+  # ------------------------------------------------------------------
+  # Job 2 — Parallel matrix rendering across 4 CPU shards
+  # ------------------------------------------------------------------
   batch_render:
+    needs: validate
     runs-on: ubuntu-latest
     timeout-minutes: 360
-
+    strategy:
+      fail-fast: false
+      matrix:
+        chunk: [0, 1, 2, 3]     # 4 parallel workers
     steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Validate Required Files
-        run: |
-          if [ ! -f "content_batch.csv" ]; then
-            echo "::error::content_batch.csv is missing!" && exit 1
-          fi
-          if [ ! -f "saem_voice_sample.wav" ]; then
-            echo "::error::saem_voice_sample.wav is missing!" && exit 1
-          fi
-
-      - name: Install System Dependencies
+      - name: Install minimal system dependencies
         run: |
           sudo DEBIAN_FRONTEND=noninteractive apt-get update -y
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
             ffmpeg \
-            texlive-latex-extra \
-            texlive-fonts-recommended \
-            texlive-fonts-extra \
-            texlive-science \
-            tipa \
-            dvisvgm \
-            cm-super \
-            libcairo2-dev \
-            libpango1.0-dev \
-            libopenblas-dev \
-            gfortran \
-            pkg-config
+            texlive-latex-base texlive-latex-recommended \
+            texlive-fonts-recommended dvisvgm \
+            libcairo2-dev libpango1.0-dev libsndfile1
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -56,31 +94,84 @@ jobs:
           python-version: '3.10'
           cache: 'pip'
 
-      - name: Install Python Packages
+      - name: Install PyTorch CPU & Python requirements
         run: |
           python -m pip install --upgrade "pip<24.1"
-          pip install --prefer-binary "setuptools<70.0.0" wheel "numpy<2.0.0" Cython pyworld
+          pip install --prefer-binary torch --extra-index-url https://download.pytorch.org/whl/cpu
           pip install --prefer-binary -r requirements.txt
 
-      - name: Cache AI Model Weights
+      - name: Cache AI model weights (XTTS-v2)
+        id: model_cache
         uses: actions/cache@v4
         with:
           path: |
             ~/.cache/huggingface
             ~/.local/share/tts
-          key: ${{ runner.os }}-ai-models-xtts-v2
+          key: ai-models-xtts-v2-${{ runner.os }}-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ai-models-xtts-v2-${{ runner.os }}-
 
-      - name: Run Batch Video Production
+      - name: Run batch render (Chunk ${{ matrix.chunk }}/${{ strategy.job-total }})
         env:
           COQUI_TOS_AGREED: "1"
+          MANIM_VERBOSE: "1"
         run: |
           mkdir -p output_shorts
-          python batch_runner.py
+          python batch_runner.py \
+            --chunk ${{ matrix.chunk }} \
+            --total-chunks ${{ strategy.job-total }} \
+            --log-file output_shorts/runlog_${{ matrix.chunk }}.json
 
-      - name: Upload Rendered Shorts
+      - name: Upload rendered shorts (Chunk ${{ matrix.chunk }})
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: physics-shorts-output-${{ github.run_id }}
+          name: physics-shorts-chunk-${{ matrix.chunk }}-${{ github.run_id }}
           path: output_shorts/*.mp4
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Upload run log (Chunk ${{ matrix.chunk }})
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: runlog-chunk-${{ matrix.chunk }}-${{ github.run_id }}
+          path: output_shorts/runlog_*.json
+          if-no-files-found: warn
+          retention-days: 14
+
+  # ------------------------------------------------------------------
+  # Job 3 — Merge chunk artifacts into a single output bundle
+  # ------------------------------------------------------------------
+  merge_artifacts:
+    needs: batch_render
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Download all render chunks
+        uses: actions/download-artifact@v4
+        with:
+          pattern: physics-shorts-chunk-*
+          merge-multiple: true
+          path: merged
+
+      - name: Generate build summary table
+        run: |
+          echo "## Physics Shorts Render Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [ -d "merged" ] && [ "$(ls -A merged/*.mp4 2>/dev/null)" ]; then
+            echo "| File | Size (MB) |" >> $GITHUB_STEP_SUMMARY
+            echo "|---|---|" >> $GITHUB_STEP_SUMMARY
+            find merged -name '*.mp4' -printf '%p\t%s\n' | \
+              awk -F'\t' '{printf "| %s | %.2f |\n", $1, $2/1048576}' >> $GITHUB_STEP_SUMMARY
+          else
+            echo "No MP4 files generated in this run." >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Upload final merged bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: physics-shorts-final-${{ github.run_id }}
+          path: merged/*.mp4
+          if-no-files-found: warn
           retention-days: 7
