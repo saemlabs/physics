@@ -1,8 +1,10 @@
 """
 generate_audio.py — XTTS-v2 voice synthesis + ambient background pad.
 
-Runs entirely offline after the model cache is warm. Deterministic per video
-via seed derived from video_id.
+Fixes in this version:
+  * Speaker latent cache keyed by wav path (was: single global slot)
+  * Explicit torch.inference_mode() prevents grad graph leaks
+  * reset_tts_model() helper for clean OOM fallback
 """
 
 from __future__ import annotations
@@ -24,7 +26,8 @@ CANONICAL_SR = 44100
 TARGET_PAD_DB = -34.0
 
 _TTS_MODEL: TTS | None = None
-_SPEAKER_LATENT: tuple | None = None
+# cache keyed by speaker_wav path so changing samples between rows is safe
+_SPEAKER_LATENT: dict[str, tuple] = {}
 
 
 # =================================================================== MODEL
@@ -34,25 +37,31 @@ def get_tts_model(use_gpu: bool | None = None) -> TTS:
         if use_gpu is None:
             use_gpu = torch.cuda.is_available()
         print(f"[TTS] Loading XTTS-v2 (GPU={use_gpu})...")
-        _TTS_MODEL = TTS("tts_models/multilingual/multi-dataset/xtts_v2", gpu=use_gpu)
+        _TTS_MODEL = TTS(
+            "tts_models/multilingual/multi-dataset/xtts_v2",
+            gpu=use_gpu,
+        )
     return _TTS_MODEL
 
 
 def reset_tts_model() -> None:
+    """Wipe the model and latent cache — used when CUDA runs out of memory."""
     global _TTS_MODEL, _SPEAKER_LATENT
     _TTS_MODEL = None
-    _SPEAKER_LATENT = None
+    _SPEAKER_LATENT = {}
 
 
 def _get_speaker_latent(tts: TTS, speaker_wav: str) -> tuple:
-    global _SPEAKER_LATENT
-    if _SPEAKER_LATENT is None:
+    key = str(Path(speaker_wav).resolve())
+    if key not in _SPEAKER_LATENT:
         print(f"[TTS] Computing speaker latent from '{speaker_wav}'...")
         gpt_cond_latent, speaker_embedding = (
-            tts.synthesizer.tts_model.get_conditioning_latents(audio_path=[speaker_wav])
+            tts.synthesizer.tts_model.get_conditioning_latents(
+                audio_path=[speaker_wav]
+            )
         )
-        _SPEAKER_LATENT = (gpt_cond_latent, speaker_embedding)
-    return _SPEAKER_LATENT
+        _SPEAKER_LATENT[key] = (gpt_cond_latent, speaker_embedding)
+    return _SPEAKER_LATENT[key]
 
 
 # =================================================================== TEXT
@@ -86,10 +95,12 @@ def _resample_to_canonical(path: str | Path) -> None:
         down = int(sr) // g
         resampled = resample_poly(data, up, down, axis=0)
         resampled = np.clip(resampled, -1.0, 1.0)
-        sf.write(str(path), resampled.astype(np.float32), CANONICAL_SR, subtype="PCM_16")
+        sf.write(str(path), resampled.astype(np.float32),
+                 CANONICAL_SR, subtype="PCM_16")
 
 
-def create_ambient_pad(voice_path: str | Path, output_pad_path: str | Path,
+def create_ambient_pad(voice_path: str | Path,
+                       output_pad_path: str | Path,
                        target_gain_db: float = TARGET_PAD_DB) -> None:
     data, sr = sf.read(str(voice_path))
     n = len(data) if data.ndim == 1 else data.shape[0]
@@ -106,7 +117,8 @@ def create_ambient_pad(voice_path: str | Path, output_pad_path: str | Path,
     noise = (noise / rms) * target_rms
     noise = np.clip(noise, -1.0, 1.0)
 
-    sf.write(str(output_pad_path), noise.astype(np.float32), int(sr), subtype="PCM_16")
+    sf.write(str(output_pad_path), noise.astype(np.float32),
+             int(sr), subtype="PCM_16")
 
 
 # =================================================================== INFERENCE
@@ -152,7 +164,6 @@ def synthesize_audio_for_row(row: dict,
 
     print(f"[TTS] Synthesizing '{vid_id}' (lang={language}, seed={seed})")
 
-    # deterministic seed
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
@@ -162,7 +173,8 @@ def synthesize_audio_for_row(row: dict,
     gpt_cond_latent, speaker_embedding = _get_speaker_latent(tts, speaker_wav)
 
     try:
-        wav_data = _run_inference(tts, script, language, gpt_cond_latent, speaker_embedding)
+        wav_data = _run_inference(tts, script, language,
+                                  gpt_cond_latent, speaker_embedding)
         sf.write(str(voice_path), wav_data, 24000, subtype="PCM_16")
     except Exception as e:
         msg = str(e).lower()
@@ -171,7 +183,8 @@ def synthesize_audio_for_row(row: dict,
             reset_tts_model()
             tts = get_tts_model(use_gpu=False)
             gpt_cond_latent, speaker_embedding = _get_speaker_latent(tts, speaker_wav)
-            wav_data = _run_inference(tts, script, language, gpt_cond_latent, speaker_embedding)
+            wav_data = _run_inference(tts, script, language,
+                                      gpt_cond_latent, speaker_embedding)
             sf.write(str(voice_path), wav_data, 24000, subtype="PCM_16")
         else:
             raise
