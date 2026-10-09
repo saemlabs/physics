@@ -1,5 +1,5 @@
 """
-render_universal.py — Master 3b1b Manim rendering engine (v2.2).
+render_universal.py — Master 3b1b Manim rendering engine (v2.3).
 """
 
 from __future__ import annotations
@@ -18,6 +18,7 @@ config.pixel_width = 1080
 config.pixel_height = 1920
 config.frame_width = 9.0
 config.frame_height = 16.0
+config.frame_rate = 30
 
 COLOR_BG       = "#0B0C10"
 COLOR_FIELD    = "#3498DB"
@@ -55,6 +56,19 @@ def clean_str(text: str | None) -> str:
     return str(text).strip().strip('"\'').strip()
 
 
+def to_3d_point(p: Any) -> np.ndarray:
+    """Normalizes 2D or 3D coordinate inputs into 3D spatial vectors."""
+    if p is None:
+        return np.zeros(3)
+    arr = np.array(p, dtype=float)
+    if arr.ndim == 1:
+        if len(arr) == 2:
+            return np.array([arr[0], arr[1], 0.0])
+        if len(arr) >= 3:
+            return arr[:3]
+    return np.zeros(3)
+
+
 def sanitize_latex(s: str) -> str:
     if not s:
         return ""
@@ -85,17 +99,26 @@ def format_latex_option(opt_text: str) -> str:
     opt_text = clean_str(opt_text)
     if not opt_text:
         return ""
+    
+    prefix = ""
+    if opt_text.lower().startswith("correct answer:"):
+        prefix = r"\text{Correct Answer: }"
+        opt_text = opt_text[15:].strip()
+
     m = re.match(r"^(\([A-Da-d]\))\s*(.*)$", opt_text)
     if m:
         label, rest = m.group(1), m.group(2)
         if not rest:
-            return r"\text{" + label + r"}"
-        if re.search(r"[\$\\_^{}]", rest):
-            return r"\text{" + label + r" }" + rest
-        return r"\text{" + label + r" " + rest + r"}"
+            body = r"\text{" + label + r"}"
+        elif re.search(r"[\$\\_^{}]", rest):
+            body = r"\text{" + label + r" }" + rest
+        else:
+            body = r"\text{" + label + r" " + rest + r"}"
+        return prefix + body
+
     if not re.search(r"[\$\\_^{}]", opt_text):
-        return r"\text{" + opt_text + r"}"
-    return opt_text
+        return prefix + r"\text{" + opt_text + r"}"
+    return prefix + opt_text
 
 
 def safe_eval_math(expr_str: str, x_val: float) -> float:
@@ -387,7 +410,7 @@ class UniversalPhysicsScene(Scene):
             anim = item.get("animate")
             if anim == "rotate":
                 angle = float(item.get("rotate_angle", 45)) * DEGREES
-                pivot = np.array(item["pivot"], dtype=float) if item.get("pivot") is not None else None
+                pivot = to_3d_point(item.get("pivot")) if item.get("pivot") is not None else None
                 pending_rotations.append((mob, angle, pivot))
 
         return group, pending_rotations
@@ -424,14 +447,14 @@ class UniversalPhysicsScene(Scene):
             mob = field
 
         elif e_type in ("charge", "particle", "dot"):
-            pos = np.array(item.get("pos", [0, 0, 0]), dtype=float)
+            pos = to_3d_point(item.get("pos", [0, 0, 0]))
             radius = float(item.get("radius", 0.22))
             dot = Dot(pos, radius=radius, color=color)
             mob = VGroup(dot, safe_mathtex(lbl_text, 20, WHITE).move_to(pos)) if lbl_text else dot
 
         elif e_type in ("vector", "arrow", "force"):
-            start = np.array(item.get("start", [0, 0, 0]), dtype=float)
-            end   = np.array(item.get("end",   [1, 1, 0]), dtype=float)
+            start = to_3d_point(item.get("start", [0, 0, 0]))
+            end   = to_3d_point(item.get("end",   [1, 1, 0]))
             vec = Arrow(start, end, buff=0, stroke_width=3.5, color=color)
             if lbl_text:
                 v_lbl = safe_mathtex(lbl_text, 24, color=color).next_to(vec, UP, buff=0.1)
@@ -440,8 +463,8 @@ class UniversalPhysicsScene(Scene):
                 mob = vec
 
         elif e_type in ("line", "rod", "segment"):
-            start = np.array(item.get("start", [0, 0, 0]), dtype=float)
-            end   = np.array(item.get("end",   [1, 1, 0]), dtype=float)
+            start = to_3d_point(item.get("start", [0, 0, 0]))
+            end   = to_3d_point(item.get("end",   [1, 1, 0]))
             dashed = bool(item.get("dashed", False))
             line = DashedLine(start, end, color=color, stroke_width=2.5) if dashed \
                    else Line(start, end, color=color, stroke_width=4)
@@ -450,7 +473,7 @@ class UniversalPhysicsScene(Scene):
             mob = line
 
         elif e_type in ("arc", "angle", "angle_arc"):
-            center  = np.array(item.get("center", [0, 0, 0]), dtype=float)
+            center  = to_3d_point(item.get("center", [0, 0, 0]))
             radius  = float(item.get("radius", 0.8))
             s_angle = float(item.get("start_angle", 0)) * DEGREES
             angle   = float(item.get("angle", 45)) * DEGREES
@@ -473,7 +496,7 @@ class UniversalPhysicsScene(Scene):
 
         elif e_type in ("shape", "lens", "circle", "rectangle", "ellipse", "polygon"):
             kind = str(item.get("kind", e_type if e_type != "shape" else "circle")).lower()
-            pos  = np.array(item.get("pos", [0, -1, 0]), dtype=float)
+            pos  = to_3d_point(item.get("pos", [0, -1, 0]))
             if kind == "rectangle":
                 dims = item.get("dims", [2, 1])
                 mob = Rectangle(width=dims[0], height=dims[1],
@@ -486,7 +509,7 @@ class UniversalPhysicsScene(Scene):
                               height=float(item.get("height", 1.0)),
                               color=color, fill_opacity=float(item.get("fill_opacity", 0.2))).move_to(pos)
             elif kind == "polygon":
-                pts = [np.array(p, dtype=float) for p in item.get("points", [])]
+                pts = [to_3d_point(p) for p in item.get("points", [])]
                 if len(pts) >= 3:
                     mob = Polygon(*pts, color=color,
                                   fill_opacity=float(item.get("fill_opacity", 0.2)))
@@ -496,7 +519,7 @@ class UniversalPhysicsScene(Scene):
 
         elif e_type == "text":
             txt = str(item.get("text", lbl_text))
-            pos = np.array(item.get("pos", [0, 0, 0]), dtype=float)
+            pos = to_3d_point(item.get("pos", [0, 0, 0]))
             if item.get("use_latex", False) or "$" in txt or "\\" in txt:
                 mob = safe_mathtex(txt, font_size=int(item.get("font_size", 22)), color=color).move_to(pos)
             else:
@@ -520,7 +543,7 @@ class UniversalPhysicsScene(Scene):
         if "rotate" in item:
             mob.rotate(float(item["rotate"]) * DEGREES)
         if "shift" in item:
-            mob.shift(np.array(item["shift"], dtype=float))
+            mob.shift(to_3d_point(item["shift"]))
         if "z_index" in item:
             mob.set_z_index(int(item["z_index"]))
 
