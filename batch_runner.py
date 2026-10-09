@@ -1,5 +1,5 @@
 """
-batch_runner.py — Orchestrates voice synthesis, Manim rendering, and FFmpeg stitching.
+batch_runner.py — Subprocess orchestrator & FFmpeg audio/video stitcher.
 """
 
 from __future__ import annotations
