@@ -16,7 +16,7 @@ from TTS.api import TTS
 
 os.environ.setdefault("COQUI_TOS_AGREED", "1")
 
-CANONICAL_SR = 22050
+CANONICAL_SR = 44100
 TARGET_PAD_DB = -34.0
 _TTS_MODEL: TTS | None = None
 _SPEAKER_LATENT: tuple | None = None
@@ -70,10 +70,11 @@ def get_wav_duration(path: str | Path) -> float:
 def _resample_to_canonical(path: str | Path):
     data, sr = sf.read(str(path))
     if sr != CANONICAL_SR:
-        gcd = np.gcd(sr, CANONICAL_SR)
+        gcd = np.gcd(int(sr), CANONICAL_SR)
         up = CANONICAL_SR // gcd
-        down = sr // gcd
+        down = int(sr) // gcd
         resampled = resample_poly(data, up, down, axis=0)
+        resampled = np.clip(resampled, -1.0, 1.0)
         sf.write(str(path), resampled.astype(np.float32), CANONICAL_SR, subtype='PCM_16')
 
 
@@ -95,8 +96,9 @@ def create_ambient_pad(
     rms = np.sqrt(np.mean(noise ** 2) + 1e-12)
     target_rms = 10 ** (target_gain_db / 20.0)
     noise = (noise / rms) * target_rms
+    noise = np.clip(noise, -1.0, 1.0)
 
-    sf.write(str(output_pad_path), noise.astype(np.float32), sr, subtype='PCM_16')
+    sf.write(str(output_pad_path), noise.astype(np.float32), int(sr), subtype='PCM_16')
 
 
 def synthesize_audio_for_row(
@@ -134,6 +136,7 @@ def synthesize_audio_for_row(
         tts.tts_to_file(
             text=script,
             file_path=str(voice_path),
+            speaker_wav=speaker_wav,
             gpt_cond_latent=gpt_cond_latent,
             speaker_embedding=speaker_embedding,
             language=language,
@@ -154,6 +157,7 @@ def synthesize_audio_for_row(
             tts.tts_to_file(
                 text=script,
                 file_path=str(voice_path),
+                speaker_wav=speaker_wav,
                 gpt_cond_latent=gpt_cond_latent,
                 speaker_embedding=speaker_embedding,
                 language=language,
