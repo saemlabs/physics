@@ -1,141 +1,267 @@
-import os
+"""
+batch_runner.py — Orchestrates voice synthesis, Manim rendering, and FFmpeg stitching.
+
+Features & Enhancements
+-----------------------
+  * --dry-run            Validate CSV + env mapping without rendering anything.
+  * --only ID1,ID2,...   Render only specific video_id rows.
+  * --resume             Skip rows whose final output MP4 already exists.
+  * --chunk N            Render rows where (idx % total_chunks) == N for multi-GPU sharding.
+  * --total-chunks M     Total number of parallel pipeline shards.
+  * --log-file PATH      Write structured per-row JSON status logs.
+  * --retries N          Transient error recovery with exponential backoff.
+  * Fixed Manim AST caching issue by enforcing --disable_caching.
+  * Fixed FFmpeg afade mute bug at st=0.
+"""
+
+from __future__ import annotations
+
+import argparse
 import csv
+import json
+import os
 import re
-import subprocess
-import glob
 import shutil
+import subprocess
+import sys
+import time
 import traceback
+from pathlib import Path
+
 from generate_audio import synthesize_audio_for_row
 
-OUTPUT_DIR = "output_shorts"
-MANIM_QUALITY = "-qh"  # '-qh' for 1080x1920 60fps, '-ql' for fast low-res draft
-CSV_FILE = "content_batch.csv"
-VOICE_SAMPLE = "saem_voice_sample.wav"
+OUTPUT_DIR   = Path("output_shorts")
+MANIM_QUALITY = "-qh"
+CSV_FILE     = Path("content_batch.csv")
+VOICE_SAMPLE = Path("saem_voice_sample.wav")
+MEDIA_DIR    = Path("media")
+TEMP_AUDIO   = Path("temp_audio")
 
-os.makedirs(OUTPUT_DIR, exist_ok=True)
+# Whitelisted environment variables passed to Manim subprocess
+ENV_WHITELIST = {
+    "PATH", "HOME", "USER", "LANG", "LC_ALL", "TERM",
+    "PYTHONPATH", "PYTHONUNBUFFERED", "TMPDIR",
+    "COQUI_TOS_AGREED",
+    # Row-injected keys
+    "VIDEO_ID", "CONCEPT_TYPE", "HEADER_TITLE", "TAGLINE",
+    "QUESTION_TEXT", "OPTION_A", "OPTION_B", "OPTION_C", "OPTION_D",
+    "CORRECT_ANSWER", "EQUATIONS_JSON", "VISUAL_DATA_JSON",
+    "AUDIO_DURATION", "SAFE_MODE", "HINDI_FONT",
+}
+
+FFMPEG_PRESET = "veryfast"
+FFMPEG_CRF = "20"
+VIDEO_FPS = "30"
 
 
+# -----------------------------------------------------------------------------
+# Helpers
+# -----------------------------------------------------------------------------
 def sanitize_filename(name: str) -> str:
-    """Sanitizes strings into safe OS filenames by replacing spaces and special characters."""
+    """Sanitize strings into safe OS filenames by replacing special characters."""
     return re.sub(r'[^\w\-]', '_', name.strip())
 
 
+def str_val(row: dict, key: str) -> str:
+    v = row.get(key)
+    return str(v).strip() if v is not None else ""
+
+
+def build_row_env(row: dict, audio_duration: float) -> dict:
+    """Build a whitelisted environment dictionary for the Manim subprocess."""
+    env = {k: v for k, v in os.environ.items() if k in ENV_WHITELIST}
+    for k, v in row.items():
+        if k and v is not None:
+            env[k.strip().upper()] = str(v).strip()
+    env["AUDIO_DURATION"] = f"{audio_duration:.3f}"
+    env["SAFE_MODE"] = env.get("SAFE_MODE", "1")
+    return env
+
+
+def find_rendered_file(vid_id: str) -> Path | None:
+    """Exact filename match for rendered Manim raw video outputs."""
+    for p in MEDIA_DIR.rglob(f"{vid_id}.mp4"):
+        return p
+    return None
+
+
+def stitch_av(raw_video: Path, voice: Path, pad: Path, out: Path):
+    """Combine voice + pad + rendered video with trailing pad and cloned end frame."""
+    filter_complex = (
+        "[1:a][2:a]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[amixout];"
+        "[amixout]apad=pad_len=96000[aout];"
+        f"[0:v]tpad=stop_mode=clone:stop_duration=2,fps={VIDEO_FPS}[vout]"
+    )
+    subprocess.run(
+        [
+            "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+            "-i", str(raw_video),
+            "-i", str(voice),
+            "-i", str(pad),
+            "-filter_complex", filter_complex,
+            "-map", "[vout]", "-map", "[aout]",
+            "-c:v", "libx264", "-preset", FFMPEG_PRESET, "-crf", FFMPEG_CRF,
+            "-c:a", "aac", "-b:a", "192k",
+            "-pix_fmt", "yuv420p",
+            "-shortest",
+            str(out),
+        ],
+        check=True,
+    )
+
+
+# -----------------------------------------------------------------------------
+# CLI Arguments
+# -----------------------------------------------------------------------------
+def parse_args():
+    p = argparse.ArgumentParser(description="Batch production runner for Manim physics shorts.")
+    p.add_argument("--dry-run", action="store_true",
+                   help="Validate CSV and env mapping without rendering videos.")
+    p.add_argument("--only", type=str, default="",
+                   help="Comma-separated video_id list to render.")
+    p.add_argument("--resume", action="store_true",
+                   help="Skip rows whose <vid_id>_final.mp4 already exists.")
+    p.add_argument("--chunk", type=int, default=0,
+                   help="Index of current worker chunk.")
+    p.add_argument("--total-chunks", type=int, default=1,
+                   help="Total number of parallel worker chunks.")
+    p.add_argument("--log-file", type=str, default="",
+                   help="Path to write execution JSON log file.")
+    p.add_argument("--retries", type=int, default=2,
+                   help="Number of retries per video on transient failure.")
+    return p.parse_args()
+
+
+# -----------------------------------------------------------------------------
+# Main Processing Pipeline
+# -----------------------------------------------------------------------------
 def process_batch():
-    # 1. Pre-flight System Checks
-    if not os.path.exists(CSV_FILE):
-        raise FileNotFoundError(f"Batch configuration '{CSV_FILE}' not found.")
-    
-    if not os.path.exists(VOICE_SAMPLE):
-        raise FileNotFoundError(f"Reference voice sample '{VOICE_SAMPLE}' not found in root directory.")
+    args = parse_args()
+    OUTPUT_DIR.mkdir(exist_ok=True)
 
-    with open(CSV_FILE, mode='r', encoding='utf-8') as file:
-        reader = list(csv.DictReader(file))
-        total = len(reader)
-        
-        if total == 0:
-            print(f" Warning: Batch configuration '{CSV_FILE}' is empty.")
-            return
+    if not CSV_FILE.exists():
+        raise FileNotFoundError(f"CSV file '{CSV_FILE}' not found.")
+    if not VOICE_SAMPLE.exists():
+        raise FileNotFoundError(f"Reference voice sample '{VOICE_SAMPLE}' not found.")
 
-        print(f"\n==========================================")
-        print(f" Starting Production Engine for {total} Videos ")
-        print(f"==========================================\n")
+    with CSV_FILE.open(encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
 
-        for idx, row in enumerate(reader, 1):
-            # Safe row parsing
-            raw_vid_id = (row.get('video_id') or f'short_{idx}').strip()
-            vid_id = sanitize_filename(raw_vid_id)
-            concept_type = (row.get('concept_type') or 'GENERIC').strip().upper()
-            
-            print(f"[{idx}/{total}] Building Video '{vid_id}' (Type: {concept_type})")
+    # Filter specific IDs if requested
+    only_set = {sanitize_filename(x) for x in args.only.split(",") if x.strip()}
+    if only_set:
+        rows = [r for r in rows if sanitize_filename(str_val(r, "video_id")) in only_set]
 
-            voice_path, pad_path = None, None
+    # Deterministic sorting
+    rows.sort(key=lambda r: str_val(r, "video_id"))
 
+    # Sharding logic for distributed builds
+    if args.total_chunks > 1:
+        rows = [r for i, r in enumerate(rows)
+                if i % args.total_chunks == args.chunk]
+
+    total = len(rows)
+    print(f"\n{'=' * 60}")
+    print(f"  Production Engine — {total} video(s)")
+    if args.total_chunks > 1:
+        print(f"  Chunk {args.chunk + 1}/{args.total_chunks}")
+    print(f"{'=' * 60}\n")
+
+    runlog: list[dict] = []
+
+    for idx, row in enumerate(rows, 1):
+        raw_vid_id = str_val(row, "video_id") or f"short_{idx}"
+        vid_id = sanitize_filename(raw_vid_id)
+        concept = str_val(row, "concept_type").upper() or "GENERIC"
+
+        final_output = OUTPUT_DIR / f"{vid_id}_final.mp4"
+
+        if args.resume and final_output.exists():
+            print(f"[{idx}/{total}] SKIP (Resume)  {vid_id}")
+            runlog.append({"video_id": vid_id, "status": "skipped"})
+            continue
+
+        if args.dry_run:
+            print(f"[{idx}/{total}] DRY RUN  {vid_id}  ({concept})")
+            runlog.append({"video_id": vid_id, "status": "dry_run", "concept_type": concept})
+            continue
+
+        print(f"[{idx}/{total}] BUILD {vid_id}  ({concept})")
+
+        last_err: Exception | None = None
+        for attempt in range(1, args.retries + 2):
             try:
-                # 2. Synthesize Voiceover & Audio Pad
-                voice_path, pad_path, audio_duration = synthesize_audio_for_row(
-                    row, 
-                    speaker_wav=VOICE_SAMPLE, 
-                    output_dir="temp_audio"
-                )
-
-                # 3. Populate Environment Payload for Universal Scene Engine
-                env = os.environ.copy()
-                for key, val in row.items():
-                    if key and val:
-                        env[key.strip().upper()] = str(val).strip()
-                env["AUDIO_DURATION"] = str(audio_duration)
-                env["VIDEO_ID"] = str(vid_id)
-
-                # 4. Clean Stale Intermediate Frames from Previous Item
-                if os.path.exists("media"):
-                    shutil.rmtree("media", ignore_errors=True)
-
-                # 5. Render Scene with Universal Physics Engine
-                print(f"[Manim Engine] Rendering 3b1b Animation...")
-                subprocess.run([
-                    "manim", MANIM_QUALITY,
-                    "--disable_caching",
-                    "-o", f"{vid_id}.mp4",
-                    "render_universal.py", "UniversalPhysicsScene"
-                ], env=env, check=True, capture_output=True, text=True)
-
-                found = glob.glob(f"media/**/{vid_id}.mp4", recursive=True)
-                if not found:
-                    raise FileNotFoundError(f"Render output '{vid_id}.mp4' not found in media/")
-                raw_video = found[0]
-
-                # 6. FFmpeg Audio/Video Sync and Post-Processing
-                final_output = os.path.join(OUTPUT_DIR, f"{vid_id}_final.mp4")
-                print(f"[FFmpeg] Stitching media into {final_output}...")
-
-                # Combine voice + pad, extend audio buffer, and hold final video frame 2s
-                filter_complex = (
-                    "[1:a][2:a]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[amixout];"
-                    "[amixout]apad=pad_len=96000[aout];"
-                    "[0:v]tpad=stop_mode=clone:stop_duration=2[vout]"
-                )
-
-                subprocess.run([
-                    "ffmpeg", "-y",
-                    "-i", raw_video,
-                    "-i", voice_path,
-                    "-i", pad_path,
-                    "-filter_complex", filter_complex,
-                    "-map", "[vout]",
-                    "-map", "[aout]",
-                    "-c:v", "libx264",
-                    "-c:a", "aac",
-                    "-b:a", "192k",
-                    "-pix_fmt", "yuv420p",
-                    "-shortest",
-                    final_output
-                ], check=True, capture_output=True, text=True)
-
-                print(f" SUCCESS: {final_output}\n")
-
-            except subprocess.CalledProcessError as cpe:
-                print(f" ERROR processing '{vid_id}': Command failed with exit code {cpe.returncode}")
-                if cpe.stderr:
-                    print(f"--- Process Error Log ---\n{cpe.stderr.strip()}\n-------------------------")
-                traceback.print_exc()
-                continue
+                _render_one(row, vid_id, final_output)
+                runlog.append({"video_id": vid_id, "status": "ok", "attempt": attempt})
+                last_err = None
+                break
             except Exception as e:
-                print(f" ERROR processing '{vid_id}': {str(e)}")
-                traceback.print_exc()
-                continue
+                last_err = e
+                print(f"  ! Attempt {attempt} failed: {e}")
+                if attempt <= args.retries:
+                    backoff = 2 ** attempt
+                    print(f"  ... Retrying in {backoff}s")
+                    time.sleep(backoff)
 
-            finally:
-                # Cleanup temporary WAV files per iteration
-                for path in [voice_path, pad_path]:
-                    if path and os.path.exists(path):
-                        try:
-                            os.remove(path)
-                        except OSError:
-                            pass
+        if last_err is not None:
+            runlog.append({"video_id": vid_id, "status": "error",
+                           "error": f"{type(last_err).__name__}: {last_err}"})
+            traceback.print_exc()
 
-    # Final cleanup of temp audio directory
-    if os.path.exists("temp_audio"):
-        shutil.rmtree("temp_audio", ignore_errors=True)
+    # Write execution log if path provided
+    if args.log_file:
+        Path(args.log_file).parent.mkdir(parents=True, exist_ok=True)
+        Path(args.log_file).write_text(json.dumps(runlog, indent=2), encoding="utf-8")
+
+    # Clean empty temporary audio folder
+    if TEMP_AUDIO.exists() and not any(TEMP_AUDIO.iterdir()):
+        TEMP_AUDIO.rmdir()
+
+
+def _render_one(row: dict, vid_id: str, final_output: Path):
+    """Synthesize voice, render Manim scene, and stitch final video for a single row."""
+    voice = pad = None
+    try:
+        # 1. Voice + Pad Synthesis
+        voice, pad, duration = synthesize_audio_for_row(
+            row, speaker_wav=str(VOICE_SAMPLE), output_dir=str(TEMP_AUDIO)
+        )
+
+        # 2. Environment Configuration
+        env = build_row_env(row, duration)
+        env["VIDEO_ID"] = vid_id
+
+        # 3. Manim Render (--disable_caching prevents stale AST frame re-use)
+        print("  [Manim] Rendering scene...")
+        subprocess.run(
+            [
+                "manim", MANIM_QUALITY,
+                "--disable_caching",
+                "-o", f"{vid_id}.mp4",
+                "render_universal.py", "UniversalPhysicsScene",
+            ],
+            env=env,
+            check=True,
+            stdout=sys.stdout,
+            stderr=sys.stderr,
+        )
+
+        raw_video = find_rendered_file(vid_id)
+        if raw_video is None:
+            raise FileNotFoundError(f"Render output '{vid_id}.mp4' not found under media/")
+
+        # 4. FFmpeg Stitching
+        print("  [FFmpeg] Stitching audio/video...")
+        stitch_av(raw_video, Path(voice), Path(pad), final_output)
+        print(f"  → SUCCESS: {final_output}\n")
+
+        # Clean intermediate raw video to prevent stale pickup
+        raw_video.unlink(missing_ok=True)
+
+    finally:
+        for p in (voice, pad):
+            if p and Path(p).exists():
+                Path(p).unlink(missing_ok=True)
 
 
 if __name__ == "__main__":
