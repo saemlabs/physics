@@ -1,105 +1,78 @@
 #!/usr/bin/env python3
-"""
-soundscape.py — Voice cleaning + ambient drone + mastering.
-
-This module is the audio mastering stage. Every voice WAV from XTTS or
-Edge-TTS passes through here before hitting FFmpeg.
-"""
+"""soundscape.py — Ambient pad + voice mastering chain."""
 
 from __future__ import annotations
-
 import numpy as np
 from scipy.io import wavfile
-from scipy.signal import butter, sosfilt
+from scipy.signal import butter, sosfilt, resample_poly
 
 CANONICAL_SR = 44100
-PAD_FREQ_HZ = 110.0          # A2 — audible on phone speakers
-PAD_GAIN = 0.022             # ~-33 dB under narration
-PEAK_TARGET = 0.891          # -1 dBFS
-LUFS_TARGET = -14.0          # YouTube Shorts standard
+PAD_FREQ_HZ  = 110.0
+PAD_GAIN     = 0.020
+PEAK_TARGET  = 0.891
+LUFS_TARGET  = -14.0
 
 
-# =================================================================== FILTERS
-def _highpass(sig: np.ndarray, sr: int, cutoff: float = 80.0) -> np.ndarray:
-    """Remove rumble below cutoff — voice has no useful content there."""
+def _highpass(sig, sr, cutoff=80.0):
     sos = butter(2, cutoff / (sr / 2.0), btype="high", output="sos")
     return sosfilt(sos, sig).astype(np.float32)
 
 
-def _lowpass(sig: np.ndarray, sr: int, cutoff: float = 12000.0) -> np.ndarray:
-    """Soften the top end — takes the 'digital' edge off synthetic speech."""
+def _lowpass(sig, sr, cutoff=12000.0):
     sos = butter(2, cutoff / (sr / 2.0), btype="low", output="sos")
     return sosfilt(sos, sig).astype(np.float32)
 
 
-def _soft_compress(sig: np.ndarray, threshold: float = 0.25,
-                   ratio: float = 3.0) -> np.ndarray:
-    """
-    Simple soft-knee compressor — evens out dynamics so loud syllables
-    don't blow out and quiet ones don't disappear.
-    """
+def _soft_compress(sig, threshold=0.25, ratio=3.0):
     out = sig.copy()
     mask = np.abs(sig) > threshold
     over = np.abs(sig[mask]) - threshold
-    compressed = threshold + over / ratio
-    out[mask] = np.sign(sig[mask]) * compressed
+    out[mask] = np.sign(sig[mask]) * (threshold + over / ratio)
     return out
 
 
-def _loudness_normalize(sig: np.ndarray, sr: int,
-                        target_lufs: float = LUFS_TARGET) -> np.ndarray:
-    """
-    Approximate ITU-R BS.1770 loudness normalization via RMS.
-    Good enough for Shorts; not reference-grade for cinema.
-    """
-    # RMS over the whole signal
-    rms = np.sqrt(np.mean(sig ** 2) + 1e-12)
+def _loudness_normalize(sig, target_lufs=LUFS_TARGET):
+    rms = float(np.sqrt(np.mean(sig ** 2) + 1e-12))
     if rms < 1e-6:
         return sig
-    # target RMS ~= 10^(LUFS/20) with empirical offset
     target_rms = 10 ** (target_lufs / 20.0) * 0.30
-    gain = target_rms / rms
-    # Limit to reasonable gain swing
-    gain = float(np.clip(gain, 0.2, 8.0))
-    out = sig * gain
-    return out
+    gain = float(np.clip(target_rms / rms, 0.2, 8.0))
+    return sig * gain
 
 
-def _peak_limit(sig: np.ndarray, ceiling: float = PEAK_TARGET) -> np.ndarray:
+def _peak_limit(sig, ceiling=PEAK_TARGET):
     peak = float(np.max(np.abs(sig)))
     if peak > ceiling:
         sig = sig * (ceiling / peak)
     return sig.astype(np.float32)
 
 
-# =================================================================== PAD
-def generate_ambient_pad(duration_sec: float,
-                         sample_rate: int = CANONICAL_SR) -> np.ndarray:
-    """
-    A2 drone with fifth harmonic. Fades in over 0.6s and out over 0.6s.
-    Mixed ~-33 dB under voice so it's felt more than heard.
-    """
+def _resample(sig, sr_in, sr_out):
+    if sr_in == sr_out:
+        return sig
+    g = int(np.gcd(sr_in, sr_out))
+    up, down = sr_out // g, sr_in // g
+    return resample_poly(sig, up, down).astype(np.float32)
+
+
+def generate_ambient_pad(duration_sec, sample_rate=CANONICAL_SR):
     n = max(1, int(sample_rate * duration_sec))
     t = np.linspace(0, duration_sec, n, endpoint=False)
-
     drone = (
         PAD_GAIN * np.sin(2 * np.pi * PAD_FREQ_HZ * t)
-        + 0.35 * PAD_GAIN * np.sin(2 * np.pi * (PAD_FREQ_HZ * 1.5) * t)
-        + 0.15 * PAD_GAIN * np.sin(2 * np.pi * (PAD_FREQ_HZ * 2.0) * t)
+        + 0.35 * PAD_GAIN * np.sin(2 * np.pi * PAD_FREQ_HZ * 1.5 * t)
+        + 0.15 * PAD_GAIN * np.sin(2 * np.pi * PAD_FREQ_HZ * 2.0 * t)
     ).astype(np.float32)
-
     fade = min(int(sample_rate * 0.6), n // 2)
     if fade > 0:
         env = np.ones(n, dtype=np.float32)
         env[:fade] = np.linspace(0, 1, fade)
         env[-fade:] = np.linspace(1, 0, fade)
         drone *= env
-
     return drone
 
 
-# =================================================================== MAIN
-def _to_float_mono(data: np.ndarray, dtype: np.dtype) -> np.ndarray:
+def _to_mono_float(data, dtype):
     if dtype == np.int16:
         out = data.astype(np.float32) / 32768.0
     elif dtype == np.int32:
@@ -112,31 +85,26 @@ def _to_float_mono(data: np.ndarray, dtype: np.dtype) -> np.ndarray:
 
 
 def master_voice(input_wav: str, output_wav: str) -> None:
-    """
-    Full mastering chain: highpass → soft-compress → lowpass → LUFS →
-    mix pad → peak limit → write 16-bit PCM.
-    """
+    """High-pass → compress → low-pass → LUFS → mix pad → peak-limit → 44.1kHz."""
     sr, raw = wavfile.read(input_wav)
-    voice = _to_float_mono(raw, raw.dtype)
-
+    voice = _to_mono_float(raw, raw.dtype)
     if voice.size == 0:
         raise ValueError(f"'{input_wav}' has no samples")
 
-    # 1) Clean the synthetic voice
-    voice = _highpass(voice, sr, cutoff=80.0)
-    voice = _soft_compress(voice, threshold=0.25, ratio=3.0)
-    voice = _lowpass(voice, sr, cutoff=12000.0)
+    voice = _highpass(voice, sr, 80.0)
+    voice = _soft_compress(voice, 0.25, 3.0)
+    voice = _lowpass(voice, sr, 12000.0)
+    voice = _loudness_normalize(voice, LUFS_TARGET)
 
-    # 2) Normalize to broadcast loudness
-    voice = _loudness_normalize(voice, sr, target_lufs=LUFS_TARGET)
+    # Resample to canonical 44.1kHz before mixing pad
+    voice = _resample(voice, sr, CANONICAL_SR)
+    sr_out = CANONICAL_SR
 
-    # 3) Build pad to match exact narration length
-    duration = len(voice) / float(sr)
-    pad = generate_ambient_pad(duration, sample_rate=sr)
+    duration = len(voice) / float(sr_out)
+    pad = generate_ambient_pad(duration, sr_out)
     L = min(len(voice), len(pad))
     mixed = voice[:L] + pad[:L]
 
-    # 4) Peak-limit and write
-    mixed = _peak_limit(mixed, ceiling=PEAK_TARGET)
+    mixed = _peak_limit(mixed, PEAK_TARGET)
     pcm = np.clip(mixed * 32767.0, -32768, 32767).astype(np.int16)
-    wavfile.write(output_wav, sr, pcm)
+    wavfile.write(output_wav, sr_out, pcm)
