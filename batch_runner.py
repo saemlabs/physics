@@ -1,17 +1,5 @@
 """
 batch_runner.py — Orchestrates voice synthesis, Manim rendering, and FFmpeg stitching.
-
-Features & Enhancements
------------------------
-  * --dry-run            Validate CSV + env mapping without rendering anything.
-  * --only ID1,ID2,...   Render only specific video_id rows.
-  * --resume             Skip rows whose final output MP4 already exists.
-  * --chunk N            Render rows where (idx % total_chunks) == N for multi-GPU sharding.
-  * --total-chunks M     Total number of parallel pipeline shards.
-  * --log-file PATH      Write structured per-row JSON status logs.
-  * --retries N          Transient error recovery with exponential backoff.
-  * Fixed Manim AST caching issue by enforcing --disable_caching.
-  * Fixed FFmpeg afade mute bug at st=0.
 """
 
 from __future__ import annotations
@@ -37,12 +25,10 @@ VOICE_SAMPLE = Path("saem_voice_sample.wav")
 MEDIA_DIR    = Path("media")
 TEMP_AUDIO   = Path("temp_audio")
 
-# Whitelisted environment variables passed to Manim subprocess
 ENV_WHITELIST = {
     "PATH", "HOME", "USER", "LANG", "LC_ALL", "TERM",
     "PYTHONPATH", "PYTHONUNBUFFERED", "TMPDIR",
     "COQUI_TOS_AGREED",
-    # Row-injected keys
     "VIDEO_ID", "CONCEPT_TYPE", "HEADER_TITLE", "TAGLINE",
     "QUESTION_TEXT", "OPTION_A", "OPTION_B", "OPTION_C", "OPTION_D",
     "CORRECT_ANSWER", "EQUATIONS_JSON", "VISUAL_DATA_JSON",
@@ -54,11 +40,7 @@ FFMPEG_CRF = "20"
 VIDEO_FPS = "30"
 
 
-# -----------------------------------------------------------------------------
-# Helpers
-# -----------------------------------------------------------------------------
 def sanitize_filename(name: str) -> str:
-    """Sanitize strings into safe OS filenames by replacing special characters."""
     return re.sub(r'[^\w\-]', '_', name.strip())
 
 
@@ -68,7 +50,6 @@ def str_val(row: dict, key: str) -> str:
 
 
 def build_row_env(row: dict, audio_duration: float) -> dict:
-    """Build a whitelisted environment dictionary for the Manim subprocess."""
     env = {k: v for k, v in os.environ.items() if k in ENV_WHITELIST}
     for k, v in row.items():
         if k and v is not None:
@@ -79,14 +60,12 @@ def build_row_env(row: dict, audio_duration: float) -> dict:
 
 
 def find_rendered_file(vid_id: str) -> Path | None:
-    """Exact filename match for rendered Manim raw video outputs."""
     for p in MEDIA_DIR.rglob(f"{vid_id}.mp4"):
         return p
     return None
 
 
 def stitch_av(raw_video: Path, voice: Path, pad: Path, out: Path):
-    """Combine voice + pad + rendered video with trailing pad and cloned end frame."""
     filter_complex = (
         "[1:a][2:a]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[amixout];"
         "[amixout]apad=pad_len=96000[aout];"
@@ -110,31 +89,18 @@ def stitch_av(raw_video: Path, voice: Path, pad: Path, out: Path):
     )
 
 
-# -----------------------------------------------------------------------------
-# CLI Arguments
-# -----------------------------------------------------------------------------
 def parse_args():
     p = argparse.ArgumentParser(description="Batch production runner for Manim physics shorts.")
-    p.add_argument("--dry-run", action="store_true",
-                   help="Validate CSV and env mapping without rendering videos.")
-    p.add_argument("--only", type=str, default="",
-                   help="Comma-separated video_id list to render.")
-    p.add_argument("--resume", action="store_true",
-                   help="Skip rows whose <vid_id>_final.mp4 already exists.")
-    p.add_argument("--chunk", type=int, default=0,
-                   help="Index of current worker chunk.")
-    p.add_argument("--total-chunks", type=int, default=1,
-                   help="Total number of parallel worker chunks.")
-    p.add_argument("--log-file", type=str, default="",
-                   help="Path to write execution JSON log file.")
-    p.add_argument("--retries", type=int, default=2,
-                   help="Number of retries per video on transient failure.")
+    p.add_argument("--dry-run", action="store_true")
+    p.add_argument("--only", type=str, default="")
+    p.add_argument("--resume", action="store_true")
+    p.add_argument("--chunk", type=int, default=0)
+    p.add_argument("--total-chunks", type=int, default=1)
+    p.add_argument("--log-file", type=str, default="")
+    p.add_argument("--retries", type=int, default=2)
     return p.parse_args()
 
 
-# -----------------------------------------------------------------------------
-# Main Processing Pipeline
-# -----------------------------------------------------------------------------
 def process_batch():
     args = parse_args()
     OUTPUT_DIR.mkdir(exist_ok=True)
@@ -147,15 +113,12 @@ def process_batch():
     with CSV_FILE.open(encoding="utf-8") as f:
         rows = list(csv.DictReader(f))
 
-    # Filter specific IDs if requested
     only_set = {sanitize_filename(x) for x in args.only.split(",") if x.strip()}
     if only_set:
         rows = [r for r in rows if sanitize_filename(str_val(r, "video_id")) in only_set]
 
-    # Deterministic sorting
     rows.sort(key=lambda r: str_val(r, "video_id"))
 
-    # Sharding logic for distributed builds
     if args.total_chunks > 1:
         rows = [r for i, r in enumerate(rows)
                 if i % args.total_chunks == args.chunk]
@@ -208,30 +171,24 @@ def process_batch():
                            "error": f"{type(last_err).__name__}: {last_err}"})
             traceback.print_exc()
 
-    # Write execution log if path provided
     if args.log_file:
         Path(args.log_file).parent.mkdir(parents=True, exist_ok=True)
         Path(args.log_file).write_text(json.dumps(runlog, indent=2), encoding="utf-8")
 
-    # Clean empty temporary audio folder
     if TEMP_AUDIO.exists() and not any(TEMP_AUDIO.iterdir()):
         TEMP_AUDIO.rmdir()
 
 
 def _render_one(row: dict, vid_id: str, final_output: Path):
-    """Synthesize voice, render Manim scene, and stitch final video for a single row."""
     voice = pad = None
     try:
-        # 1. Voice + Pad Synthesis
         voice, pad, duration = synthesize_audio_for_row(
             row, speaker_wav=str(VOICE_SAMPLE), output_dir=str(TEMP_AUDIO)
         )
 
-        # 2. Environment Configuration
         env = build_row_env(row, duration)
         env["VIDEO_ID"] = vid_id
 
-        # 3. Manim Render (--disable_caching prevents stale AST frame re-use)
         print("  [Manim] Rendering scene...")
         subprocess.run(
             [
@@ -250,12 +207,10 @@ def _render_one(row: dict, vid_id: str, final_output: Path):
         if raw_video is None:
             raise FileNotFoundError(f"Render output '{vid_id}.mp4' not found under media/")
 
-        # 4. FFmpeg Stitching
         print("  [FFmpeg] Stitching audio/video...")
         stitch_av(raw_video, Path(voice), Path(pad), final_output)
         print(f"  → SUCCESS: {final_output}\n")
 
-        # Clean intermediate raw video to prevent stale pickup
         raw_video.unlink(missing_ok=True)
 
     finally:
