@@ -13,9 +13,8 @@ from wave import open as wave_open
 
 from schema_validator import safe_json_loads, validate_csv
 
-# ---- timeouts (seconds) ----
-MANIM_TIMEOUT  = 900     # Manim on shared CI runners can be slow
-AUDIO_TIMEOUT  = 900     # ★ raised from 300 — long scripts (~300+ words) need ~7min on CPU
+MANIM_TIMEOUT  = 900
+AUDIO_TIMEOUT  = 900
 FFMPEG_TIMEOUT = 180
 
 DEFAULT_CSV         = "content_batch.csv"
@@ -37,6 +36,7 @@ def sanitize_filename(name: str) -> str:
 
 
 def parse_csv_file(csv_file: str) -> list[dict]:
+    """Parse CSV, supporting 13-column (legacy) and 15-column (with beats) formats."""
     rows: list[dict] = []
     with open(csv_file, "r", encoding="utf-8", newline="") as f:
         reader = csv.reader(f)
@@ -58,6 +58,8 @@ def parse_csv_file(csv_file: str) -> list[dict]:
                 "equations_json":   row[10].strip(),
                 "visual_data_json": row[11].strip(),
                 "audio_script":     row[12].strip(),
+                "beats_json":       row[13].strip() if len(row) > 13 else "",
+                "bindings_json":    row[14].strip() if len(row) > 14 else "",
             })
     return rows
 
@@ -96,6 +98,10 @@ def run_pipeline_for_row(row, output_dir, speaker_wav, dry_run=False) -> bool:
         try:
             safe_json_loads(row["equations_json"])
             safe_json_loads(row["visual_data_json"])
+            if row.get("beats_json"):
+                safe_json_loads(row["beats_json"])
+            if row.get("bindings_json"):
+                safe_json_loads(row["bindings_json"])
             _log("[DRY-RUN] Syntax validated.")
             return True
         except Exception as e:
@@ -108,7 +114,7 @@ def run_pipeline_for_row(row, output_dir, speaker_wav, dry_run=False) -> bool:
     final_output = os.path.join(output_dir, f"{video_id}.mp4")
 
     try:
-        # ---- Step 1: XTTS-v2 voice clone + mastering ----
+        # ---- Step 1: XTTS voice clone + mastering ----
         audio_cmd = [
             sys.executable, "generate_audio.py",
             "--video_id",    video_id,
@@ -132,6 +138,9 @@ def run_pipeline_for_row(row, output_dir, speaker_wav, dry_run=False) -> bool:
         ]
 
         # ---- Step 3: Manim render ----
+        beats    = row.get("beats_json", "").strip() or "[]"
+        bindings = row.get("bindings_json", "").strip() or "[]"
+
         render_cmd = [
             sys.executable, "render_universal.py",
             "--video_id",         video_id,
@@ -142,6 +151,8 @@ def run_pipeline_for_row(row, output_dir, speaker_wav, dry_run=False) -> bool:
             "--correct_answer",   row["correct_answer"],
             "--equations_json",   row["equations_json"],
             "--visual_data_json", row["visual_data_json"],
+            "--beats_json",       beats,
+            "--bindings_json",    bindings,
             "--duration",         str(duration),
             "--output",           temp_video,
         ]
