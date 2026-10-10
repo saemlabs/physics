@@ -9,7 +9,7 @@ import sys
 
 X_MIN, X_MAX = -3.5, 3.5
 Y_MIN, Y_MAX = -2.2, 1.8
-WORD_MIN, WORD_MAX = 70, 170
+WORD_MIN, WORD_MAX = 70, 200
 
 
 def safe_json_loads(val_str: str):
@@ -79,6 +79,35 @@ def validate_csv(path: str) -> bool:
                 except Exception as e:
                     print(f"[ERROR] Row {row_idx} ({vid}): {col_name} — {e}")
                     has_errors = True
+
+            # Optional beats_json column (index 13)
+            if len(row) > 13 and row[13].strip():
+                try:
+                    beats = safe_json_loads(row[13].strip())
+                    if not isinstance(beats, list):
+                        print(f"[ERROR] Row {row_idx} ({vid}): beats_json not a list.")
+                        has_errors = True
+                    else:
+                        for b in beats:
+                            if isinstance(b, dict) and "t" in b:
+                                if not isinstance(b["t"], (int, float)):
+                                    print(f"[WARN] Row {row_idx} ({vid}): "
+                                          f"beat 't' not numeric")
+                except Exception as e:
+                    print(f"[ERROR] Row {row_idx} ({vid}): beats_json — {e}")
+                    has_errors = True
+
+            # Optional bindings_json column (index 14)
+            if len(row) > 14 and row[14].strip():
+                try:
+                    binds = safe_json_loads(row[14].strip())
+                    if not isinstance(binds, list):
+                        print(f"[ERROR] Row {row_idx} ({vid}): bindings_json not a list.")
+                        has_errors = True
+                except Exception as e:
+                    print(f"[ERROR] Row {row_idx} ({vid}): bindings_json — {e}")
+                    has_errors = True
+
     return not has_errors
 
 
