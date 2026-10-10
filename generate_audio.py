@@ -1,16 +1,13 @@
 #!/usr/bin/env python3
 """
-generate_audio.py — XTTS-v2 voice cloning ONLY (no Edge-TTS fallback).
+generate_audio.py — XTTS-v2 voice cloning tuned for MAXIMUM identity match.
 
-Reference voice = the only source of speech.
-If XTTS cannot run, we fail loudly. You fix the environment or sample.
-
-Tuned for Feynman-style narration:
-  temperature=0.70        warm, natural
-  speed=0.95              deliberate, lecturer-paced
-  repetition_penalty=5.0  prevents loops on long scripts
-  top_k=50, top_p=0.85    natural sampling
-  enable_text_splitting   handles 300+ word scripts
+Identity-critical parameters:
+  temperature = 0.55      low = stays close to reference (was 0.70)
+  top_k       = 20        narrow sampling = more reference-like (was 50)
+  top_p       = 0.75      tight nucleus = less improvisation (was 0.85)
+  repetition_penalty = 2.5   conservative; high values distort cadence (was 5.0)
+  speed       = 1.0       MUST match reference pace (was 0.95)
 """
 
 from __future__ import annotations
@@ -25,6 +22,16 @@ CANONICAL_SR = 44100
 _TTS_MODEL = None
 _SPEAKER_LATENT: dict = {}
 
+# ------------------------------------------------------------------ identity
+IDENTITY_PARAMS = {
+    "temperature": 0.55,
+    "top_k": 20,
+    "top_p": 0.75,
+    "repetition_penalty": 2.5,
+    "speed": 1.0,
+    "enable_text_splitting": True,
+}
+
 
 def _log(msg: str) -> None:
     print(f"[audio] {msg}", file=sys.stderr, flush=True)
@@ -34,18 +41,45 @@ def get_deterministic_seed(video_id: str) -> int:
     return int(hashlib.sha256(video_id.encode("utf-8")).hexdigest()[:8], 16)
 
 
-def _inspect_reference(path: str) -> None:
+def _inspect_reference(path: str) -> dict:
+    """Deep audit of the reference sample; warns on identity-degrading issues."""
+    import soundfile as sf
+    info = sf.info(path)
+    dur = info.frames / float(info.samplerate)
+    _log(f"Reference: {dur:.2f}s, {info.samplerate} Hz, {info.channels} ch")
+
+    # Identity-critical warnings
+    if dur < 6.0:
+        _log(f"!! CRITICAL: reference is {dur:.1f}s — XTTS clones poorly below 10s")
+    elif dur < 10.0:
+        _log(f"!! WARN: reference is {dur:.1f}s — 10-20s gives a much tighter clone")
+    elif dur > 30.0:
+        _log(f"!! WARN: reference is {dur:.1f}s — trim to 15s for sharper identity")
+
+    if info.samplerate < 16000:
+        _log(f"!! WARN: {info.samplerate} Hz reference loses vocal detail")
+
+    # Optional: measure noise floor to warn on noisy references
     try:
-        import soundfile as sf
-        info = sf.info(path)
-        dur = info.frames / float(info.samplerate)
-        _log(f"Reference '{path}': {dur:.2f}s, {info.samplerate} Hz, {info.channels} ch")
-        if dur < 6.0:
-            _log(f"WARN reference is only {dur:.1f}s (XTTS wants 10–30s)")
-        if dur > 60.0:
-            _log(f"WARN reference is {dur:.1f}s (trim to 30s recommended)")
-    except Exception as e:
-        _log(f"WARN could not inspect reference: {e}")
+        import numpy as np
+        data, _ = sf.read(path, always_2d=False)
+        if data.ndim > 1:
+            data = data.mean(axis=1)
+        # Estimate noise from the quietest 10% of windows
+        win = max(1, int(info.samplerate * 0.02))
+        energies = np.array([np.sqrt(np.mean(data[i:i+win]**2))
+                            for i in range(0, len(data) - win, win)])
+        if len(energies) > 10:
+            noise_floor = np.percentile(energies, 10)
+            signal = np.percentile(energies, 90)
+            snr_db = 20 * np.log10((signal + 1e-12) / (noise_floor + 1e-12))
+            _log(f"Reference SNR ~ {snr_db:.1f} dB")
+            if snr_db < 25:
+                _log("!! WARN: SNR < 25 dB — background noise will leak into the clone")
+    except Exception:
+        pass
+
+    return {"duration": dur, "sr": info.samplerate}
 
 
 def _get_tts(use_gpu: bool | None = None):
@@ -99,12 +133,7 @@ def synthesize(text: str, speaker_wav: str, output_wav: str, seed: int) -> None:
             language="en",
             gpt_cond_latent=g,
             speaker_embedding=e,
-            temperature=0.70,
-            speed=0.95,
-            repetition_penalty=5.0,
-            top_k=50,
-            top_p=0.85,
-            enable_text_splitting=True,
+            **IDENTITY_PARAMS,
         )
 
     try:
@@ -112,7 +141,7 @@ def synthesize(text: str, speaker_wav: str, output_wav: str, seed: int) -> None:
     except Exception as e:
         msg = str(e).lower()
         if "cuda" in msg or "out of memory" in msg:
-            _log(f"CUDA OOM — retrying on CPU ({type(e).__name__})")
+            _log("CUDA OOM — retrying on CPU")
             _reset_tts()
             tts = _get_tts(use_gpu=False)
             gpt, emb = _get_speaker_latent(tts, speaker_wav)
@@ -125,7 +154,6 @@ def synthesize(text: str, speaker_wav: str, output_wav: str, seed: int) -> None:
         wav = wav.detach().cpu().numpy()
     wav = np.asarray(wav, dtype=np.float32)
 
-    # Discover XTTS's native output rate (usually 24000)
     target_sr = 24000
     try:
         model_sr = (
@@ -137,12 +165,12 @@ def synthesize(text: str, speaker_wav: str, output_wav: str, seed: int) -> None:
     except Exception:
         pass
 
-    _log(f"XTTS output: {target_sr} Hz, {len(wav) / target_sr:.2f}s of speech")
+    _log(f"XTTS output: {target_sr} Hz, {len(wav)/target_sr:.2f}s of speech")
     sf.write(output_wav, wav, target_sr, subtype="PCM_16")
 
 
 def main() -> int:
-    p = argparse.ArgumentParser(description="XTTS-v2 voice cloning.")
+    p = argparse.ArgumentParser(description="XTTS-v2 identity-tuned voice cloning.")
     p.add_argument("--video_id", required=True)
     p.add_argument("--script", required=True)
     p.add_argument("--speaker_wav", default="saem_voice_sample.wav")
@@ -150,7 +178,7 @@ def main() -> int:
     args = p.parse_args()
 
     if not os.path.exists(args.speaker_wav):
-        _log(f"FATAL reference voice sample not found: '{args.speaker_wav}'")
+        _log(f"FATAL reference not found: '{args.speaker_wav}'")
         return 1
 
     seed = get_deterministic_seed(args.video_id)
@@ -161,7 +189,7 @@ def main() -> int:
         _log(f"Synthesizing '{args.video_id}' (seed={seed}, {len(args.script.split())} words)")
         synthesize(args.script, args.speaker_wav, raw_wav, seed)
     except Exception as e:
-        _log(f"FATAL XTTS synthesis failed: {type(e).__name__}: {e}")
+        _log(f"FATAL XTTS failed: {type(e).__name__}: {e}")
         if os.path.exists(raw_wav):
             try:
                 os.remove(raw_wav)
