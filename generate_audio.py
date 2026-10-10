@@ -2,12 +2,12 @@
 """
 generate_audio.py — XTTS-v2 voice cloning tuned for MAXIMUM identity match.
 
-Identity-critical parameters:
-  temperature = 0.55      low = stays close to reference (was 0.70)
-  top_k       = 20        narrow sampling = more reference-like (was 50)
-  top_p       = 0.75      tight nucleus = less improvisation (was 0.85)
-  repetition_penalty = 2.5   conservative; high values distort cadence (was 5.0)
-  speed       = 1.0       MUST match reference pace (was 0.95)
+Identity-critical parameters (tuned for accuracy over creativity):
+  temperature        = 0.55    low = stays close to reference
+  top_k              = 20      narrow sampling → more reference-like
+  top_p              = 0.75    tight nucleus → less improvisation
+  repetition_penalty = 2.5     conservative; high values distort cadence
+  speed              = 1.0     MUST match reference pace
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ CANONICAL_SR = 44100
 _TTS_MODEL = None
 _SPEAKER_LATENT: dict = {}
 
-# ------------------------------------------------------------------ identity
+# Identity-locked generation params
 IDENTITY_PARAMS = {
     "temperature": 0.55,
     "top_k": 20,
@@ -41,14 +41,13 @@ def get_deterministic_seed(video_id: str) -> int:
     return int(hashlib.sha256(video_id.encode("utf-8")).hexdigest()[:8], 16)
 
 
-def _inspect_reference(path: str) -> dict:
-    """Deep audit of the reference sample; warns on identity-degrading issues."""
+def _inspect_reference(path: str) -> None:
+    """Deep audit — warns on identity-degrading reference properties."""
     import soundfile as sf
     info = sf.info(path)
     dur = info.frames / float(info.samplerate)
     _log(f"Reference: {dur:.2f}s, {info.samplerate} Hz, {info.channels} ch")
 
-    # Identity-critical warnings
     if dur < 6.0:
         _log(f"!! CRITICAL: reference is {dur:.1f}s — XTTS clones poorly below 10s")
     elif dur < 10.0:
@@ -59,27 +58,24 @@ def _inspect_reference(path: str) -> dict:
     if info.samplerate < 16000:
         _log(f"!! WARN: {info.samplerate} Hz reference loses vocal detail")
 
-    # Optional: measure noise floor to warn on noisy references
+    # Measure noise floor
     try:
         import numpy as np
         data, _ = sf.read(path, always_2d=False)
         if data.ndim > 1:
             data = data.mean(axis=1)
-        # Estimate noise from the quietest 10% of windows
         win = max(1, int(info.samplerate * 0.02))
         energies = np.array([np.sqrt(np.mean(data[i:i+win]**2))
-                            for i in range(0, len(data) - win, win)])
+                            for i in range(0, max(1, len(data) - win), win)])
         if len(energies) > 10:
-            noise_floor = np.percentile(energies, 10)
+            noise = np.percentile(energies, 10)
             signal = np.percentile(energies, 90)
-            snr_db = 20 * np.log10((signal + 1e-12) / (noise_floor + 1e-12))
+            snr_db = 20 * np.log10((signal + 1e-12) / (noise + 1e-12))
             _log(f"Reference SNR ~ {snr_db:.1f} dB")
             if snr_db < 25:
-                _log("!! WARN: SNR < 25 dB — background noise will leak into the clone")
+                _log("!! WARN: SNR < 25 dB — background noise will leak into clone")
     except Exception:
         pass
-
-    return {"duration": dur, "sr": info.samplerate}
 
 
 def _get_tts(use_gpu: bool | None = None):
@@ -129,10 +125,8 @@ def synthesize(text: str, speaker_wav: str, output_wav: str, seed: int) -> None:
 
     def _infer(model, g, e):
         return model.synthesizer.tts_model.inference(
-            text=text,
-            language="en",
-            gpt_cond_latent=g,
-            speaker_embedding=e,
+            text=text, language="en",
+            gpt_cond_latent=g, speaker_embedding=e,
             **IDENTITY_PARAMS,
         )
 
